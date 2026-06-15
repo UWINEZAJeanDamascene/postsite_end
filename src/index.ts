@@ -94,6 +94,7 @@ app.get("/", (_req, res) => {
       sites: "/sites/*",
       "main-stock": "/main-stock/*",
       "purchase-orders": "/purchase-orders/*",
+      quotations: "/quotations/*",
       // Add other endpoints as needed
     },
   });
@@ -167,6 +168,7 @@ app.use("/suppliers", supplierRoutes);
 app.use("/delivery-notes", deliveryNoteRoutes);
 app.use("/purchase-returns", purchaseReturnRoutes);
 app.use("/quotations", quotationRoutes);
+app.use("/api/quotations", quotationRoutes);
 console.log("Routes registered successfully");
 
 // Error handling middleware
