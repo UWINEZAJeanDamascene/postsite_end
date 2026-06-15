@@ -1,30 +1,31 @@
-import mongoose, { Schema, Document, Model } from 'mongoose';
+import mongoose, { Schema, Document, Model } from "mongoose";
 
 export enum ActionType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LOGIN = 'login',
-  LOGOUT = 'logout',
-  ASSIGN = 'assign',
-  UNASSIGN = 'unassign',
-  PRICE_UPDATE = 'price_update',
-  SYNC = 'sync',
-  EXPORT = 'export',
-  IMPORT = 'import',
-  VIEW = 'view',
-  OTHER = 'other',
+  CREATE = "create",
+  UPDATE = "update",
+  DELETE = "delete",
+  LOGIN = "login",
+  LOGOUT = "logout",
+  ASSIGN = "assign",
+  UNASSIGN = "unassign",
+  PRICE_UPDATE = "price_update",
+  SYNC = "sync",
+  EXPORT = "export",
+  IMPORT = "import",
+  VIEW = "view",
+  OTHER = "other",
 }
 
 export enum ResourceType {
-  SITE = 'site',
-  SITE_RECORD = 'site_record',
-  MAIN_STOCK = 'main_stock',
-  MATERIAL = 'material',
-  USER = 'user',
-  SYSTEM = 'system',
-  COMPANY = 'company',
-  PURCHASE_ORDER = 'purchase_order',
+  SITE = "site",
+  SITE_RECORD = "site_record",
+  MAIN_STOCK = "main_stock",
+  MATERIAL = "material",
+  USER = "user",
+  SYSTEM = "system",
+  COMPANY = "company",
+  PURCHASE_ORDER = "purchase_order",
+  QUOTATION = "quotation",
 }
 
 export interface IActionLog {
@@ -47,12 +48,12 @@ export interface IActionLog {
 export interface IActionLogDocument extends IActionLog, Document {}
 
 export interface IActionLogModel extends Model<IActionLogDocument> {
-  logAction(data: Omit<IActionLog, 'timestamp'>): Promise<IActionLogDocument>;
+  logAction(data: Omit<IActionLog, "timestamp">): Promise<IActionLogDocument>;
 }
 
 const ActionLogSchema = new Schema<IActionLogDocument, IActionLogModel>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     userName: { type: String, required: true },
     userEmail: { type: String, required: true },
     userRole: { type: String, required: true },
@@ -79,7 +80,7 @@ const ActionLogSchema = new Schema<IActionLogDocument, IActionLogModel>(
   },
   {
     timestamps: false, // We use custom timestamp field
-  }
+  },
 );
 
 // Compound indexes for efficient querying
@@ -90,10 +91,13 @@ ActionLogSchema.index({ companyId: 1, resource: 1, timestamp: -1 });
 
 // Static method to create action log
 ActionLogSchema.statics.logAction = async function (
-  data: Omit<IActionLog, 'timestamp'>
+  data: Omit<IActionLog, "timestamp">,
 ): Promise<IActionLogDocument> {
   return this.create({ ...data, timestamp: new Date() });
 };
 
-export const ActionLog = mongoose.model<IActionLogDocument, IActionLogModel>('ActionLog', ActionLogSchema);
+export const ActionLog = mongoose.model<IActionLogDocument, IActionLogModel>(
+  "ActionLog",
+  ActionLogSchema,
+);
 export default ActionLog;

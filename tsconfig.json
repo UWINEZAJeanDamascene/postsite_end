@@ -3,12 +3,12 @@
     "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+
     "lib": ["ES2022", "DOM"],
-  
-    "types": ["node"],   
+
+    "types": ["node"],
     "outDir": "./dist",
-    "rootDir": "./src", 
+    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -24,12 +24,7 @@
     "noImplicitThis": true,
     "alwaysStrict": true,
     "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
   },
- "exclude": [
-  "node_modules",
-  "dist",
-  "src/__tests__",
-  "prisma"
-]
+  "exclude": ["node_modules", "dist", "src/__tests__", "prisma"],
 }
