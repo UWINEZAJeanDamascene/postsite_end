@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PurchaseReturn = exports.DeliveryNote = exports.Supplier = exports.PurchaseOrder = exports.ResourceType = exports.ActionType = exports.ActionLog = exports.createNotification = exports.NotificationPriority = exports.NotificationType = exports.Notification = exports.MovementType = exports.StockMovement = exports.RecordStatus = exports.RecordSource = exports.MainStockRecord = exports.SiteRecord = exports.Material = exports.Site = exports.UserRole = exports.User = void 0;
+exports.Quotation = exports.PurchaseReturn = exports.DeliveryNote = exports.Supplier = exports.PurchaseOrder = exports.ResourceType = exports.ActionType = exports.ActionLog = exports.createNotification = exports.NotificationPriority = exports.NotificationType = exports.Notification = exports.MovementType = exports.StockMovement = exports.RecordStatus = exports.RecordSource = exports.MainStockRecord = exports.SiteRecord = exports.Material = exports.Site = exports.UserRole = exports.User = void 0;
 var User_1 = require("./User");
 Object.defineProperty(exports, "User", { enumerable: true, get: function () { return User_1.User; } });
 Object.defineProperty(exports, "UserRole", { enumerable: true, get: function () { return User_1.UserRole; } });
@@ -34,4 +34,6 @@ var DeliveryNote_1 = require("./DeliveryNote");
 Object.defineProperty(exports, "DeliveryNote", { enumerable: true, get: function () { return DeliveryNote_1.DeliveryNote; } });
 var PurchaseReturn_1 = require("./PurchaseReturn");
 Object.defineProperty(exports, "PurchaseReturn", { enumerable: true, get: function () { return PurchaseReturn_1.PurchaseReturn; } });
+var Quotation_1 = require("./Quotation");
+Object.defineProperty(exports, "Quotation", { enumerable: true, get: function () { return Quotation_1.Quotation; } });
 //# sourceMappingURL=index.js.map

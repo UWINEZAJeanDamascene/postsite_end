@@ -3,8 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.processStockMovement = processStockMovement;
-exports.syncSiteRecordToMainStock = syncSiteRecordToMainStock;
+exports.syncSiteRecordToMainStock = exports.processStockMovement = void 0;
 const models_1 = require("../models");
 const mongoose_1 = __importDefault(require("mongoose"));
 /**
@@ -20,6 +19,7 @@ async function processStockMovement(recordId) {
     // will always return fresh data on next query
     console.log(`Stock movement processed for record ${recordId}`);
 }
+exports.processStockMovement = processStockMovement;
 /**
  * Sync a site record to main stock (triggered on site record create/update)
  * This is now handled by the SiteRecord post-save middleware,
@@ -73,4 +73,5 @@ async function syncSiteRecordToMainStock(siteRecordId) {
     await processStockMovement(mainRecord._id.toString());
     return mainRecord;
 }
+exports.syncSiteRecordToMainStock = syncSiteRecordToMainStock;
 //# sourceMappingURL=autoAdjustment.js.map

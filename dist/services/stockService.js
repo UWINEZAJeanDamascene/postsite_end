@@ -3,9 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateStockQuantities = updateStockQuantities;
-exports.setStockPrice = setStockPrice;
-exports.bulkSetPrices = bulkSetPrices;
+exports.bulkSetPrices = exports.setStockPrice = exports.updateStockQuantities = void 0;
 const MainStockRecord_1 = require("../models/MainStockRecord");
 const StockMovement_1 = require("../models/StockMovement");
 const mongoose_1 = __importDefault(require("mongoose"));
@@ -52,6 +50,7 @@ async function updateStockQuantities(mainStockRecordId, updates, context) {
     await record.save();
     return record;
 }
+exports.updateStockQuantities = updateStockQuantities;
 /**
  * Set price on a MainStockRecord with movement logging
  */
@@ -81,6 +80,7 @@ async function setStockPrice(mainStockRecordId, price, context) {
     await record.save();
     return record;
 }
+exports.setStockPrice = setStockPrice;
 /**
  * Bulk set prices on site-sourced records
  */
@@ -102,4 +102,5 @@ async function bulkSetPrices(updates, context) {
     }
     return { updated, errors };
 }
+exports.bulkSetPrices = bulkSetPrices;
 //# sourceMappingURL=stockService.js.map

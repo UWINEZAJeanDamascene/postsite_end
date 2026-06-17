@@ -3,13 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.hashPassword = hashPassword;
-exports.verifyPassword = verifyPassword;
-exports.generateToken = generateToken;
-exports.verifyToken = verifyToken;
-exports.hasPermission = hasPermission;
-exports.canAccessSite = canAccessSite;
-exports.canModifySiteRecord = canModifySiteRecord;
+exports.canModifySiteRecord = exports.canAccessSite = exports.hasPermission = exports.verifyToken = exports.generateToken = exports.verifyPassword = exports.hashPassword = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const config_1 = require("../config");
@@ -18,9 +12,11 @@ const SALT_ROUNDS = 10;
 async function hashPassword(password) {
     return bcryptjs_1.default.hash(password, SALT_ROUNDS);
 }
+exports.hashPassword = hashPassword;
 async function verifyPassword(password, hashedPassword) {
     return bcryptjs_1.default.compare(password, hashedPassword);
 }
+exports.verifyPassword = verifyPassword;
 function generateToken(user) {
     const assignedSiteIds = (user.assignedSites || []).map((s) => {
         if (typeof s === 'string')
@@ -43,9 +39,11 @@ function generateToken(user) {
         expiresIn: config_1.config.JWT.EXPIRES_IN,
     });
 }
+exports.generateToken = generateToken;
 function verifyToken(token) {
     return jsonwebtoken_1.default.verify(token, config_1.config.JWT.SECRET);
 }
+exports.verifyToken = verifyToken;
 // RBAC Permission Matrix
 const PERMISSIONS = {
     [types_1.UserRole.SITE_MANAGER]: {
@@ -96,15 +94,18 @@ function hasPermission(role, action, resource) {
         return true;
     return resourcePerms.includes(action);
 }
+exports.hasPermission = hasPermission;
 function canAccessSite(user, siteId, assignedSiteIds) {
     if (user.role === types_1.UserRole.MAIN_MANAGER || user.role === types_1.UserRole.ACCOUNTANT || user.role === types_1.UserRole.MANAGER)
         return true;
     return assignedSiteIds.includes(siteId);
 }
+exports.canAccessSite = canAccessSite;
 function canModifySiteRecord(user, recordCreatorId, siteId, assignedSiteIds) {
     if (user.role === types_1.UserRole.MAIN_MANAGER || user.role === types_1.UserRole.ACCOUNTANT || user.role === types_1.UserRole.MANAGER)
         return true;
     // Site manager can only modify their own records on their assigned sites
     return user.id === recordCreatorId && assignedSiteIds.includes(siteId);
 }
+exports.canModifySiteRecord = canModifySiteRecord;
 //# sourceMappingURL=auth.js.map

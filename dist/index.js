@@ -15,23 +15,13 @@ var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (
 }) : function(o, v) {
     o["default"] = v;
 });
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -57,6 +47,7 @@ const purchaseOrders_1 = __importDefault(require("./routes/purchaseOrders"));
 const suppliers_1 = __importDefault(require("./routes/suppliers"));
 const deliveryNotes_1 = __importDefault(require("./routes/deliveryNotes"));
 const purchaseReturns_1 = __importDefault(require("./routes/purchaseReturns"));
+const quotations_1 = __importDefault(require("./routes/quotations"));
 const app = (0, express_1.default)();
 // Middleware
 app.use((0, helmet_1.default)({
@@ -70,7 +61,14 @@ app.use((0, cors_1.default)({
         // Allow requests with no origin (curl, Postman, mobile apps)
         if (!origin)
             return callback(null, true);
-        const devOrigins = ['http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173'];
+        const devOrigins = [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+        ];
         // Allow explicit FRONTEND_URL from env (useful for custom domains)
         const frontendUrl = config_1.config.FRONTEND_URL;
         // Allow localhost during development and the configured frontend URL
@@ -87,68 +85,72 @@ app.use((0, cors_1.default)({
         catch (err) {
             // fallthrough to block
         }
-        console.warn('CORS blocked origin:', origin);
-        return callback(new Error('Not allowed by CORS'));
+        console.warn("CORS blocked origin:", origin);
+        return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 }));
-app.use(express_1.default.json({ limit: '10mb' }));
-app.use(express_1.default.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express_1.default.json({ limit: "10mb" }));
+app.use(express_1.default.urlencoded({ extended: true, limit: "10mb" }));
 // Parse cookies for authentication
 app.use((0, cookie_parser_1.default)());
 // API info endpoint
-app.get('/', (_req, res) => {
+app.get("/", (_req, res) => {
     res.json({
-        message: 'Lilstock API Server',
-        version: '1.0.0',
+        message: "Lilstock API Server",
+        version: "1.0.0",
         endpoints: {
-            health: '/health',
-            auth: '/auth/*',
-            sites: '/sites/*',
-            'main-stock': '/main-stock/*',
-            'purchase-orders': '/purchase-orders/*',
+            health: "/health",
+            auth: "/auth/*",
+            sites: "/sites/*",
+            "main-stock": "/main-stock/*",
+            "purchase-orders": "/purchase-orders/*",
+            quotations: "/quotations/*",
             // Add other endpoints as needed
-        }
+        },
     });
 });
 // Health check
-app.get('/health', async (_req, res) => {
+app.get("/health", async (_req, res) => {
     try {
         // Check database connection
-        const mongoose = (await Promise.resolve().then(() => __importStar(require('./config/mongoose')))).default;
+        const mongoose = (await Promise.resolve().then(() => __importStar(require("./config/mongoose")))).default;
         if (mongoose.connection.readyState === 1) {
             res.json({
-                status: 'healthy',
+                status: "healthy",
                 timestamp: new Date().toISOString(),
-                database: 'connected',
+                database: "connected",
                 environment: config_1.config.NODE_ENV,
             });
         }
         else {
-            throw new Error('Database not connected');
+            throw new Error("Database not connected");
         }
     }
     catch (error) {
         res.status(503).json({
-            status: 'unhealthy',
+            status: "unhealthy",
             timestamp: new Date().toISOString(),
-            database: 'disconnected',
-            error: 'Database connection failed',
+            database: "disconnected",
+            error: "Database connection failed",
         });
     }
 });
 // Debug endpoint to inspect incoming request auth headers/cookies (safe: does not return tokens)
-app.get('/debug/request-info', (req, res) => {
+app.get("/debug/request-info", (req, res) => {
     try {
         const origin = req.headers.origin || null;
         const hasAuthHeader = !!req.headers.authorization;
         const hasCookie = !!(req.cookies && req.cookies.access_token);
-        const authHeaderSample = typeof req.headers.authorization === 'string'
-            ? req.headers.authorization.slice(0, 40) + (req.headers.authorization.length > 40 ? '...' : '')
+        const authHeaderSample = typeof req.headers.authorization === "string"
+            ? req.headers.authorization.slice(0, 40) +
+                (req.headers.authorization.length > 40 ? "..." : "")
             : null;
-        const cookieLength = req.cookies && req.cookies.access_token ? req.cookies.access_token.length : 0;
+        const cookieLength = req.cookies && req.cookies.access_token
+            ? req.cookies.access_token.length
+            : 0;
         res.json({
             origin,
             hasAuthHeader,
@@ -158,41 +160,45 @@ app.get('/debug/request-info', (req, res) => {
         });
     }
     catch (err) {
-        res.status(500).json({ error: 'Failed to inspect request' });
+        res.status(500).json({ error: "Failed to inspect request" });
     }
 });
 // API routes
-app.use('/auth', auth_1.default);
-app.use('/sites', sites_1.default);
-app.use('/site-records', siteRecords_1.default);
-app.use('/main-stock', mainStock_1.default);
-app.use('/views', views_1.default);
-app.use('/materials', materials_1.default);
-app.use('/action-logs', actionLogs_1.default);
-app.use('/notifications', notifications_1.default);
-app.use('/companies', companies_1.default);
-app.use('/purchase-orders', purchaseOrders_1.default);
-app.use('/suppliers', suppliers_1.default);
-app.use('/delivery-notes', deliveryNotes_1.default);
-app.use('/purchase-returns', purchaseReturns_1.default);
-console.log('Routes registered successfully');
+app.use("/auth", auth_1.default);
+app.use("/sites", sites_1.default);
+app.use("/site-records", siteRecords_1.default);
+app.use("/main-stock", mainStock_1.default);
+app.use("/views", views_1.default);
+app.use("/materials", materials_1.default);
+app.use("/action-logs", actionLogs_1.default);
+app.use("/notifications", notifications_1.default);
+app.use("/companies", companies_1.default);
+app.use("/purchase-orders", purchaseOrders_1.default);
+app.use("/suppliers", suppliers_1.default);
+app.use("/delivery-notes", deliveryNotes_1.default);
+app.use("/purchase-returns", purchaseReturns_1.default);
+app.use("/quotations", quotations_1.default);
+app.use("/api/quotations", quotations_1.default);
+console.log("Routes registered successfully");
 // Error handling middleware
 app.use((err, _req, res, _next) => {
-    console.error('Error:', err);
+    console.error("Error:", err);
     res.status(500).json({
-        error: config_1.config.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+        error: config_1.config.NODE_ENV === "production"
+            ? "Internal server error"
+            : err.message,
     });
 });
 // 404 handler
 app.use((_req, res) => {
-    res.status(404).json({ error: 'Not found' });
+    res.status(404).json({ error: "Not found" });
 });
 // Connect to database and start server
 async function startServer() {
     try {
-        console.log('Connecting to database...');
+        console.log("Connecting to database...");
         await (0, mongoose_1.connectDB)();
-        console.log('Database connected successfully');
+        console.log("Database connected successfully");
         const server = app.listen(config_1.config.PORT, () => {
             console.log(`API server running on port ${config_1.config.PORT}`);
             console.log(`Health check available at http://localhost:${config_1.config.PORT}/health`);
@@ -200,27 +206,27 @@ async function startServer() {
         // Initialize WebSocket server
         (0, server_1.initializeWebSocketServer)();
         // Graceful shutdown
-        process.on('SIGTERM', async () => {
-            console.log('SIGTERM received, shutting down gracefully');
+        process.on("SIGTERM", async () => {
+            console.log("SIGTERM received, shutting down gracefully");
             (0, server_1.closeWebSocketServer)();
             server.close(() => {
-                console.log('HTTP server closed');
+                console.log("HTTP server closed");
             });
             await (0, mongoose_1.disconnectDB)();
             process.exit(0);
         });
-        process.on('SIGINT', async () => {
-            console.log('SIGINT received, shutting down gracefully');
+        process.on("SIGINT", async () => {
+            console.log("SIGINT received, shutting down gracefully");
             (0, server_1.closeWebSocketServer)();
             server.close(() => {
-                console.log('HTTP server closed');
+                console.log("HTTP server closed");
             });
             await (0, mongoose_1.disconnectDB)();
             process.exit(0);
         });
     }
     catch (error) {
-        console.error('Failed to start server:', error);
+        console.error("Failed to start server:", error);
         process.exit(1);
     }
 }

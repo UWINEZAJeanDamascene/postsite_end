@@ -1,10 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initializeWebSocketServer = initializeWebSocketServer;
-exports.broadcastToClients = broadcastToClients;
-exports.broadcastToSite = broadcastToSite;
-exports.getConnectedClientCount = getConnectedClientCount;
-exports.closeWebSocketServer = closeWebSocketServer;
+exports.closeWebSocketServer = exports.getConnectedClientCount = exports.broadcastToSite = exports.broadcastToClients = exports.initializeWebSocketServer = void 0;
 const ws_1 = require("ws");
 const config_1 = require("../config");
 let wss = null;
@@ -46,6 +42,7 @@ function initializeWebSocketServer() {
     console.log(`WebSocket server running on port ${port}`);
     return wss;
 }
+exports.initializeWebSocketServer = initializeWebSocketServer;
 function broadcastToClients(event) {
     if (clients.size === 0)
         return;
@@ -56,6 +53,7 @@ function broadcastToClients(event) {
         }
     });
 }
+exports.broadcastToClients = broadcastToClients;
 function broadcastToSite(siteId, event) {
     // In a real implementation, you'd track which clients are subscribed to which sites
     // For now, broadcast to all and let clients filter by siteId in the payload
@@ -64,9 +62,11 @@ function broadcastToSite(siteId, event) {
         payload: { ...event.payload, siteId },
     });
 }
+exports.broadcastToSite = broadcastToSite;
 function getConnectedClientCount() {
     return clients.size;
 }
+exports.getConnectedClientCount = getConnectedClientCount;
 function closeWebSocketServer() {
     if (wss) {
         wss.close(() => {
@@ -76,4 +76,5 @@ function closeWebSocketServer() {
         wss = null;
     }
 }
+exports.closeWebSocketServer = closeWebSocketServer;
 //# sourceMappingURL=server.js.map

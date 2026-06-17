@@ -1,4 +1,30 @@
-import mongoose, { Document, Model } from 'mongoose';
+/// <reference types="mongoose/types/aggregate" />
+/// <reference types="mongoose/types/callback" />
+/// <reference types="mongoose/types/collection" />
+/// <reference types="mongoose/types/connection" />
+/// <reference types="mongoose/types/cursor" />
+/// <reference types="mongoose/types/document" />
+/// <reference types="mongoose/types/error" />
+/// <reference types="mongoose/types/expressions" />
+/// <reference types="mongoose/types/helpers" />
+/// <reference types="mongoose/types/middlewares" />
+/// <reference types="mongoose/types/indexes" />
+/// <reference types="mongoose/types/models" />
+/// <reference types="mongoose/types/mongooseoptions" />
+/// <reference types="mongoose/types/pipelinestage" />
+/// <reference types="mongoose/types/populate" />
+/// <reference types="mongoose/types/query" />
+/// <reference types="mongoose/types/schemaoptions" />
+/// <reference types="mongoose/types/session" />
+/// <reference types="mongoose/types/types" />
+/// <reference types="mongoose/types/utility" />
+/// <reference types="mongoose/types/validation" />
+/// <reference types="mongoose/types/virtuals" />
+/// <reference types="mongoose/types/schematypes" />
+/// <reference types="mongoose/types/inferschematype" />
+/// <reference types="mongoose/types/inferhydrateddoctype" />
+/// <reference types="mongoose/types/inferrawdoctype" />
+import mongoose, { Document, Model } from "mongoose";
 export declare enum ActionType {
     CREATE = "create",
     UPDATE = "update",
@@ -22,7 +48,8 @@ export declare enum ResourceType {
     USER = "user",
     SYSTEM = "system",
     COMPANY = "company",
-    PURCHASE_ORDER = "purchase_order"
+    PURCHASE_ORDER = "purchase_order",
+    QUOTATION = "quotation"
 }
 export interface IActionLog {
     userId: mongoose.Types.ObjectId;
@@ -43,7 +70,7 @@ export interface IActionLog {
 export interface IActionLogDocument extends IActionLog, Document {
 }
 export interface IActionLogModel extends Model<IActionLogDocument> {
-    logAction(data: Omit<IActionLog, 'timestamp'>): Promise<IActionLogDocument>;
+    logAction(data: Omit<IActionLog, "timestamp">): Promise<IActionLogDocument>;
 }
 export declare const ActionLog: IActionLogModel;
 export default ActionLog;

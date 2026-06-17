@@ -1,11 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getUsedMaterialsView = getUsedMaterialsView;
-exports.getRemainingMaterialsView = getRemainingMaterialsView;
-exports.getSingleUsedMaterialView = getSingleUsedMaterialView;
-exports.getSingleRemainingMaterialView = getSingleRemainingMaterialView;
-exports.getStockSummary = getStockSummary;
-exports.recordStockMovement = recordStockMovement;
+exports.recordStockMovement = exports.getStockSummary = exports.getSingleRemainingMaterialView = exports.getSingleUsedMaterialView = exports.getRemainingMaterialsView = exports.getUsedMaterialsView = void 0;
 const MainStockRecord_1 = require("../models/MainStockRecord");
 const StockMovement_1 = require("../models/StockMovement");
 /**
@@ -61,6 +56,7 @@ async function getUsedMaterialsView(company_id) {
     ];
     return MainStockRecord_1.MainStockRecord.aggregate(pipeline);
 }
+exports.getUsedMaterialsView = getUsedMaterialsView;
 /**
  * RemainingMaterialsView - Computes quantityReceived - quantityUsed per material
  * with total value. Includes price valuation.
@@ -121,6 +117,7 @@ async function getRemainingMaterialsView(company_id) {
     ];
     return MainStockRecord_1.MainStockRecord.aggregate(pipeline);
 }
+exports.getRemainingMaterialsView = getRemainingMaterialsView;
 /**
  * Get single material used view
  */
@@ -173,6 +170,7 @@ async function getSingleUsedMaterialView(company_id, materialName) {
     const result = await MainStockRecord_1.MainStockRecord.aggregate(pipeline);
     return result[0] || null;
 }
+exports.getSingleUsedMaterialView = getSingleUsedMaterialView;
 /**
  * Get single material remaining view
  */
@@ -233,6 +231,7 @@ async function getSingleRemainingMaterialView(company_id, materialName) {
     const result = await MainStockRecord_1.MainStockRecord.aggregate(pipeline);
     return result[0] || null;
 }
+exports.getSingleRemainingMaterialView = getSingleRemainingMaterialView;
 /**
  * Comprehensive stock summary
  */
@@ -266,6 +265,7 @@ async function getStockSummary(company_id) {
         summary: summary.sort((a, b) => a.materialName.localeCompare(b.materialName)),
     };
 }
+exports.getStockSummary = getStockSummary;
 /**
  * Service to record stock movement and update derived views
  * This should be called before updating MainStockRecord quantities
@@ -281,4 +281,5 @@ async function recordStockMovement(data) {
     // the latest data on next query
     return movement;
 }
+exports.recordStockMovement = recordStockMovement;
 //# sourceMappingURL=viewsAggregation.js.map
