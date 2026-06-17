@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "nodemon src/index.ts",
-    "build": "tsc",
+    "build": "npx -y -p typescript@5.3.3 tsc",
     "start": "node dist/index.js",
     "db:seed": "ts-node prisma/seed.ts",
     "migrate:dn": "ts-node src/scripts/migrateDeliveryNotes.ts",
