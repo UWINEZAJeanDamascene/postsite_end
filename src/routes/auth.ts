@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { generateToken } from '../utils/auth';
 import { config } from '../config';
 import { authenticateToken } from '../middleware/auth';
@@ -8,6 +8,86 @@ import mongoose from 'mongoose';
 import { ActionLogService } from '../services/actionLogService';
 
 const router = Router();
+
+async function buildLoginResponse(
+  user: InstanceType<typeof User>,
+  req: Request,
+  res: Response,
+): Promise<void> {
+  let assignedSitesData: { id: string; name: string }[] = [];
+  if (user.role === UserRole.SITE_MANAGER && user.assignedSites) {
+    assignedSitesData = user.assignedSites.map((id: any) => ({
+      id: id.toString(),
+      name: '',
+    }));
+  }
+
+  const token = generateToken({
+    id: user._id.toString(),
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    company_id: user.company_id,
+    isActive: user.isActive,
+    assignedSites: assignedSitesData,
+  });
+
+  ActionLogService.logLogin(
+    req,
+    user._id.toString(),
+    user.name,
+    user.email,
+    user.role,
+    user.company_id,
+  ).catch((err) => console.error('Failed to log login action:', err));
+
+  const company = await getOrCreateDefaultCompany(user.company_id);
+
+  const cookieOptions = [
+    `access_token=${token}`,
+    'Path=/',
+    'HttpOnly',
+    process.env.NODE_ENV === 'production' ? 'Secure' : '',
+    'SameSite=Lax',
+    'Max-Age=86400',
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  res.setHeader('Set-Cookie', cookieOptions);
+
+  res.json({
+    token,
+    user: {
+      id: user._id.toString(),
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      company_id: user.company_id,
+      assignedSites: assignedSitesData,
+      profilePicture: user.profilePicture,
+      phone: user.phone,
+      department: user.department,
+      jobTitle: user.jobTitle,
+      bio: user.bio,
+      location: user.location,
+      company: company
+        ? {
+            id: company._id.toString(),
+            name: company.name,
+            logo: company.logo,
+            address: company.address,
+            phone: company.phone,
+            email: company.email,
+            website: company.website,
+            taxId: company.taxId,
+            industry: company.industry,
+            description: company.description,
+          }
+        : null,
+    },
+  });
+}
 
 // Helper to get or create default company
 async function getOrCreateDefaultCompany(companyId?: string) {
@@ -29,6 +109,91 @@ async function getOrCreateDefaultCompany(companyId?: string) {
     return null; // Don't fail login due to company lookup issues
   }
 }
+
+// Check whether initial admin setup is required (no users in database)
+router.get('/setup-status', async (_req, res): Promise<void> => {
+  try {
+    const userCount = await User.countDocuments();
+    res.json({ needsSetup: userCount === 0, userCount });
+  } catch (error) {
+    console.error('Setup status error:', error);
+    res.status(500).json({ error: 'Failed to check setup status' });
+  }
+});
+
+// One-time bootstrap: create first main manager when database has no users
+router.post('/setup-admin', async (req, res): Promise<void> => {
+  try {
+    const userCount = await User.countDocuments();
+    if (userCount > 0) {
+      res.status(403).json({
+        error: 'System already initialized. Please sign in instead.',
+      });
+      return;
+    }
+
+    const { email, password, name, company_id, company_name } = req.body;
+
+    if (!email || !password || !name || !company_id) {
+      res.status(400).json({
+        error: 'Email, password, name, and company_id are required',
+      });
+      return;
+    }
+
+    if (password.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return;
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedCompanyId = String(company_id).trim();
+
+    const existingCompany = await Company.findOne({
+      company_id: normalizedCompanyId,
+    });
+    if (existingCompany) {
+      res.status(409).json({ error: 'Company ID already exists' });
+      return;
+    }
+
+    await Company.create({
+      name: company_name?.trim() || normalizedCompanyId,
+      company_id: normalizedCompanyId,
+    });
+
+    const user = await User.create({
+      email: normalizedEmail,
+      password,
+      name: String(name).trim(),
+      role: UserRole.MAIN_MANAGER,
+      company_id: normalizedCompanyId,
+      assignedSites: [],
+      isActive: true,
+    });
+
+    await ActionLogService.logFromRequest(
+      req,
+      ActionType.CREATE,
+      ResourceType.USER,
+      `Initial admin account created: ${user.name}`,
+      {
+        resourceId: user._id.toString(),
+        resourceName: user.name,
+        details: { email: user.email, company_id: normalizedCompanyId },
+      },
+    );
+
+    await buildLoginResponse(user, req, res);
+  } catch (error: any) {
+    if (error?.code === 11000) {
+      res.status(409).json({ error: 'User already exists' });
+      return;
+    }
+    console.error('Setup admin error:', error);
+    res.status(500).json({ error: 'Failed to create admin account' });
+  }
+});
 
 // Register - Main stock manager can create users
 router.post('/register', authenticateToken, async (req, res): Promise<void> => {
@@ -114,73 +279,7 @@ router.post('/login', async (req, res): Promise<void> => {
     }
 
     // Get assigned sites for site managers
-    let assignedSitesData: { id: string; name: string }[] = [];
-    if (user.role === UserRole.SITE_MANAGER && user.assignedSites) {
-      assignedSitesData = user.assignedSites.map((id: any) => ({ id: id.toString(), name: '' }));
-    }
-
-    // Generate token
-    const token = generateToken({
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      company_id: user.company_id,
-      isActive: user.isActive,
-      assignedSites: assignedSitesData,
-    });
-
-    // Log the login action (fire-and-forget to avoid blocking)
-    ActionLogService.logLogin(req, user._id.toString(), user.name, user.email, user.role, user.company_id)
-      .catch(err => console.error('Failed to log login action:', err));
-
-    // Fetch or create company data
-    const company = await getOrCreateDefaultCompany(user.company_id);
-
-    // Return token in JSON for localStorage-based auth
-    // ALSO set cookie for cross-session/cross-device persistence via httpOnly cookie
-    const cookieOptions = [
-      `access_token=${token}`,
-      'Path=/',
-      'HttpOnly',
-      process.env.NODE_ENV === 'production' ? 'Secure' : '',
-      'SameSite=Lax',
-      'Max-Age=86400', // 24 hours
-    ].filter(Boolean).join('; ');
-
-    res.setHeader('Set-Cookie', cookieOptions);
-
-    res.json({
-      token,
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        company_id: user.company_id,
-        assignedSites: assignedSitesData,
-        // Profile fields
-        profilePicture: user.profilePicture,
-        phone: user.phone,
-        department: user.department,
-        jobTitle: user.jobTitle,
-        bio: user.bio,
-        location: user.location,
-        // Company data
-        company: company ? {
-          id: company._id.toString(),
-          name: company.name,
-          logo: company.logo,
-          address: company.address,
-          phone: company.phone,
-          email: company.email,
-          website: company.website,
-          taxId: company.taxId,
-          industry: company.industry,
-          description: company.description,
-        } : null,
-      },
-    });
+    await buildLoginResponse(user, req, res);
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Failed to login' });
