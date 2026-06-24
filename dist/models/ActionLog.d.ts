@@ -49,7 +49,8 @@ export declare enum ResourceType {
     SYSTEM = "system",
     COMPANY = "company",
     PURCHASE_ORDER = "purchase_order",
-    QUOTATION = "quotation"
+    QUOTATION = "quotation",
+    CLIENT = "client"
 }
 export interface IActionLog {
     userId: mongoose.Types.ObjectId;

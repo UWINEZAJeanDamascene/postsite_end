@@ -26,6 +26,7 @@ export enum ResourceType {
   COMPANY = "company",
   PURCHASE_ORDER = "purchase_order",
   QUOTATION = "quotation",
+  CLIENT = "client",
 }
 
 export interface IActionLog {

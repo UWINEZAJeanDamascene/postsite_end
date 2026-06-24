@@ -8,6 +8,7 @@ export { Notification, INotification, NotificationType, NotificationPriority, cr
 export { ActionLog, IActionLog, IActionLogDocument, IActionLogModel, ActionType, ResourceType, } from "./ActionLog";
 export { PurchaseOrder, IPurchaseOrder, IPOItem } from "./PurchaseOrder";
 export { Supplier, ISupplierDocument } from "./Supplier";
+export { Client, IClientDocument } from "./Client";
 export { DeliveryNote, IDeliveryNoteDocument, IDeliveryNoteItem, } from "./DeliveryNote";
 export { PurchaseReturn, IPurchaseReturnDocument, IPurchaseReturnItem, } from "./PurchaseReturn";
 export { Quotation, IQuotation, IQuotationItem } from "./Quotation";

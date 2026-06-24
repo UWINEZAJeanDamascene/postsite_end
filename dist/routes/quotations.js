@@ -63,6 +63,141 @@ function formatQt(qt) {
         updatedAt: qt.updatedAt,
     };
 }
+function escapePdfText(value) {
+    return String(value ?? "")
+        .replace(/\\/g, "\\\\")
+        .replace(/\(/g, "\\(")
+        .replace(/\)/g, "\\)")
+        .replace(/[\r\n]+/g, " ");
+}
+function formatMoney(value) {
+    return `$${Number(value || 0).toFixed(2)}`;
+}
+function wrapText(text, maxLength) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+        const next = current ? `${current} ${word}` : word;
+        if (next.length > maxLength && current) {
+            lines.push(current);
+            current = word;
+        }
+        else {
+            current = next;
+        }
+    }
+    if (current)
+        lines.push(current);
+    return lines.length ? lines : [""];
+}
+function buildQuotationPdf(qt) {
+    const pageWidth = 595;
+    const pageHeight = 842;
+    const margin = 48;
+    const lineHeight = 15;
+    const bottom = 56;
+    const pages = [[]];
+    let y = pageHeight - margin;
+    const addPage = () => {
+        pages.push([]);
+        y = pageHeight - margin;
+    };
+    const addText = (text, x = margin, size = 10, bold = false) => {
+        if (y < bottom)
+            addPage();
+        pages[pages.length - 1].push(`BT /${bold ? "F2" : "F1"} ${size} Tf ${x} ${y} Td (${escapePdfText(text)}) Tj ET`);
+        y -= lineHeight;
+    };
+    const addGap = (amount = 8) => {
+        y -= amount;
+        if (y < bottom)
+            addPage();
+    };
+    addText("QUOTATION", margin, 20, true);
+    addText(qt.qtNumber, margin, 13, true);
+    addText(`Status: ${qt.status.toUpperCase()}`, margin, 10);
+    addGap();
+    addText("Supplier", margin, 12, true);
+    addText(qt.supplier.name);
+    if (qt.supplier.contactPerson)
+        addText(`Contact: ${qt.supplier.contactPerson}`);
+    if (qt.supplier.email)
+        addText(`Email: ${qt.supplier.email}`);
+    if (qt.supplier.phone)
+        addText(`Phone: ${qt.supplier.phone}`);
+    if (qt.supplier.address)
+        addText(`Address: ${qt.supplier.address}`);
+    addGap();
+    const site = qt.site_id;
+    addText("Details", margin, 12, true);
+    if (site?.name)
+        addText(`Site: ${site.name}${site.location ? `, ${site.location}` : ""}`);
+    addText(`Created: ${qt.createdAt ? new Date(qt.createdAt).toLocaleDateString() : ""}`);
+    if (qt.validUntil)
+        addText(`Valid Until: ${new Date(qt.validUntil).toLocaleDateString()}`);
+    if (qt.sentDate)
+        addText(`Sent Date: ${new Date(qt.sentDate).toLocaleDateString()}`);
+    addGap();
+    addText("Items", margin, 12, true);
+    addText("Material                                         Qty      Unit     Unit Price     Total", margin, 9, true);
+    addText("--------------------------------------------------------------------------------", margin, 9);
+    qt.items.forEach((item, index) => {
+        const materialLines = wrapText(`${index + 1}. ${item.materialName}`, 44);
+        const firstLine = materialLines[0].padEnd(46, " ");
+        addText(`${firstLine}${String(item.quantityRequested).padStart(8, " ")}  ${String(item.unit).padEnd(7, " ")} ${formatMoney(item.unitPrice).padStart(11, " ")} ${formatMoney(item.totalPrice).padStart(11, " ")}`, margin, 9);
+        materialLines.slice(1).forEach((line) => addText(`   ${line}`, margin, 9));
+        if (item.notes) {
+            wrapText(`Notes: ${item.notes}`, 78).forEach((line) => addText(`   ${line}`, margin, 8));
+        }
+    });
+    addGap();
+    addText(`Subtotal: ${formatMoney(qt.subTotal)}`, 390, 10);
+    addText(`Tax (${qt.taxRate || 0}%): ${formatMoney(qt.taxAmount)}`, 390, 10);
+    addText(`Total: ${formatMoney(qt.totalAmount)}`, 390, 12, true);
+    if (qt.notes) {
+        addGap();
+        addText("Notes", margin, 12, true);
+        wrapText(qt.notes, 90).forEach((line) => addText(line, margin, 9));
+    }
+    if (qt.terms) {
+        addGap();
+        addText("Terms & Conditions", margin, 12, true);
+        wrapText(qt.terms, 90).forEach((line) => addText(line, margin, 9));
+    }
+    const objects = [];
+    const addObject = (body) => {
+        objects.push(body);
+        return objects.length;
+    };
+    const catalogId = addObject("<< /Type /Catalog /Pages 2 0 R >>");
+    const pagesId = 2;
+    objects.push("");
+    const fontRegularId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+    const fontBoldId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
+    const pageIds = [];
+    for (const pageLines of pages) {
+        const content = pageLines.join("\n");
+        const contentId = addObject(`<< /Length ${Buffer.byteLength(content, "utf8")} >>\nstream\n${content}\nendstream`);
+        const pageId = addObject(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+        pageIds.push(pageId);
+    }
+    objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
+    let pdf = "%PDF-1.4\n";
+    const offsets = [0];
+    objects.forEach((body, index) => {
+        offsets.push(Buffer.byteLength(pdf, "utf8"));
+        pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+    });
+    const xrefOffset = Buffer.byteLength(pdf, "utf8");
+    pdf += `xref\n0 ${objects.length + 1}\n`;
+    pdf += "0000000000 65535 f \n";
+    for (let i = 1; i < offsets.length; i += 1) {
+        pdf += `${offsets[i].toString().padStart(10, "0")} 00000 n \n`;
+    }
+    pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+    return Buffer.from(pdf, "utf8");
+}
 // ── GET / — List ──────────────────────────────────────────────────────────────
 router.get("/", auth_1.authenticateToken, async (req, res) => {
     try {
@@ -135,6 +270,31 @@ router.get("/:id", auth_1.authenticateToken, async (req, res) => {
     catch (err) {
         console.error("Get quotation error:", err);
         res.status(500).json({ error: "Failed to fetch quotation" });
+    }
+});
+router.get("/:id/pdf", auth_1.authenticateToken, async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const qt = await models_1.Quotation.findOne({
+            _id: new mongoose_1.default.Types.ObjectId(id),
+            company_id: req.user.company_id,
+        })
+            .populate("site_id", "name location")
+            .populate("createdBy", "name");
+        if (!qt) {
+            res.status(404).json({ error: "Quotation not found" });
+            return;
+        }
+        const pdf = buildQuotationPdf(qt);
+        const filename = `${qt.qtNumber}.pdf`;
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename="${filename}"`);
+        res.setHeader("Content-Length", pdf.length.toString());
+        res.send(pdf);
+    }
+    catch (err) {
+        console.error("Generate quotation PDF error:", err);
+        res.status(500).json({ error: "Failed to generate quotation PDF" });
     }
 });
 // ── POST / — Create ───────────────────────────────────────────────────────────

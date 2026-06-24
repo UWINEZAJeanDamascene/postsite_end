@@ -70,6 +70,294 @@ function formatQt(qt: IQuotation) {
   };
 }
 
+function escapePdfText(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/[\r\n]+/g, " ");
+}
+
+function formatMoney(value: number | undefined): string {
+  return `$${Number(value || 0).toFixed(2)}`;
+}
+
+function wrapText(text: string, maxLength: number): string[] {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLength && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
+
+function buildQuotationHtml(qt: IQuotation): string {
+  const site = qt.site_id as any;
+  const supplier = qt.supplier || {};
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Quotation ${qt.qtNumber}</title>
+  <style>
+    @page { size: A4; margin: 20mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; color: #222; background: #fff; }
+    .page { width: 100%; max-width: 920px; margin: 0 auto; padding: 40px; }
+    .header { text-align: center; margin-bottom: 30px; }
+    .header h1 { margin: 0; font-size: 32px; letter-spacing: 0.08em; }
+    .header p { margin: 10px 0 0; font-size: 18px; color: #475569; }
+    .status { display: inline-flex; margin-top: 14px; padding: 8px 24px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #111827; background: #f3f4f6; }
+    .section { margin-bottom: 28px; }
+    .section-title { font-size: 13px; font-weight: 700; margin-bottom: 14px; color: #475569; text-transform: uppercase; letter-spacing: 0.08em; }
+    .info-grid { display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap: 30px; align-items: start; }
+    .info-block { padding: 18px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 14px; }
+    .info-block p { margin: 8px 0; line-height: 1.65; }
+    .info-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 8px; }
+    .info-row:last-child { margin-bottom: 0; }
+    .label { color: #6b7280; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .value { font-weight: 700; color: #111827; text-align: right; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 14px 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
+    th { background: #f8fafc; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: #374151; }
+    td.text-right { text-align: right; }
+    .totals { margin-top: 24px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+    .total-row { display: flex; gap: 16px; font-size: 14px; }
+    .total-row strong { min-width: 140px; text-align: right; display: inline-block; }
+    .total-amount { font-size: 17px; font-weight: 700; }
+    .footer { margin-top: 42px; padding-top: 22px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px; }
+    .no-print { margin-top: 32px; text-align: center; }
+    .print-button { padding: 10px 28px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 14px; }
+    @media print { .page { padding: 0; } .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>QUOTATION</h1>
+    <p>${qt.qtNumber}</p>
+    <span class="status">${qt.status?.toUpperCase() || "DRAFT"}</span>
+  </div>
+
+  <div class="section info-grid">
+    <div class="info-block">
+      <div class="section-title">Supplier</div>
+      <div class="info-row"><span class="label">Name</span><span class="value">${supplier.name || "-"}</span></div>
+      ${supplier.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${supplier.contactPerson}</span></div>` : ""}
+      ${supplier.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${supplier.email}</span></div>` : ""}
+      ${supplier.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${supplier.phone}</span></div>` : ""}
+      ${supplier.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${supplier.address}</span></div>` : ""}
+    </div>
+    <div class="info-block">
+      <div class="section-title">Quotation Details</div>
+      <div class="info-row"><span class="label">Site</span><span class="value">${site?.name || "-"}</span></div>
+      ${site?.location ? `<div class="info-row"><span class="label">Location</span><span class="value">${site.location}</span></div>` : ""}
+      <div class="info-row"><span class="label">Created</span><span class="value">${qt.createdAt ? new Date(qt.createdAt).toLocaleDateString() : "-"}</span></div>
+      ${qt.validUntil ? `<div class="info-row"><span class="label">Valid Until</span><span class="value">${new Date(qt.validUntil).toLocaleDateString()}</span></div>` : ""}
+      ${qt.sentDate ? `<div class="info-row"><span class="label">Sent Date</span><span class="value">${new Date(qt.sentDate).toLocaleDateString()}</span></div>` : ""}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Items</div>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Material</th>
+          <th>Description</th>
+          <th class="text-right">Qty</th>
+          <th class="text-right">Unit</th>
+          <th class="text-right">Unit Price</th>
+          <th class="text-right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${qt.items
+          .map(
+            (item: any, index: number) => `
+          <tr>
+            <td>${index + 1}</td>
+            <td><strong>${item.materialName || "-"}</strong></td>
+            <td>${item.description || "-"}</td>
+            <td class="text-right">${item.quantityRequested ?? 0}</td>
+            <td class="text-right">${item.unit || "-"}</td>
+            <td class="text-right">$${Number(item.unitPrice ?? 0).toFixed(2)}</td>
+            <td class="text-right">$${Number(item.totalPrice ?? 0).toFixed(2)}</td>
+          </tr>`,
+          )
+          .join("")}
+      </tbody>
+    </table>
+
+    <div class="totals">
+      <div class="total-row"><strong>Subtotal:</strong> $${Number(qt.subTotal ?? 0).toFixed(2)}</div>
+      <div class="total-row"><strong>Tax (${Number(qt.taxRate ?? 0).toFixed(2)}%):</strong> $${Number(qt.taxAmount ?? 0).toFixed(2)}</div>
+      <div class="total-row total-amount"><strong>Total:</strong> $${Number(qt.totalAmount ?? 0).toFixed(2)}</div>
+    </div>
+  </div>
+
+  ${qt.notes ? `
+  <div class="section">
+    <div class="section-title">Notes</div>
+    <p>${qt.notes}</p>
+  </div>
+  ` : ""}
+
+  ${qt.terms ? `
+  <div class="section">
+    <div class="section-title">Terms & Conditions</div>
+    <p>${qt.terms}</p>
+  </div>
+  ` : ""}
+
+  <div class="footer">
+    <p>Generated on ${new Date().toLocaleString()}</p>
+    <p>Multi-site stock management system</p>
+  </div>
+
+  <div class="no-print">
+    <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+</body>
+</html>`;
+}
+
+function buildQuotationPdf(qt: IQuotation): Buffer {
+  const pageWidth = 595;
+  const pageHeight = 842;
+  const margin = 48;
+  const lineHeight = 15;
+  const bottom = 56;
+  const pages: string[][] = [[]];
+  let y = pageHeight - margin;
+
+  const addPage = () => {
+    pages.push([]);
+    y = pageHeight - margin;
+  };
+
+  const addText = (text: unknown, x = margin, size = 10, bold = false) => {
+    if (y < bottom) addPage();
+    pages[pages.length - 1].push(
+      `BT /${bold ? "F2" : "F1"} ${size} Tf ${x} ${y} Td (${escapePdfText(text)}) Tj ET`,
+    );
+    y -= lineHeight;
+  };
+
+  const addGap = (amount = 8) => {
+    y -= amount;
+    if (y < bottom) addPage();
+  };
+
+  addText("QUOTATION", margin, 20, true);
+  addText(qt.qtNumber, margin, 13, true);
+  addText(`Status: ${qt.status.toUpperCase()}`, margin, 10);
+  addGap();
+
+  addText("Supplier", margin, 12, true);
+  addText(qt.supplier.name);
+  if (qt.supplier.contactPerson) addText(`Contact: ${qt.supplier.contactPerson}`);
+  if (qt.supplier.email) addText(`Email: ${qt.supplier.email}`);
+  if (qt.supplier.phone) addText(`Phone: ${qt.supplier.phone}`);
+  if (qt.supplier.address) addText(`Address: ${qt.supplier.address}`);
+  addGap();
+
+  const site = qt.site_id as any;
+  addText("Details", margin, 12, true);
+  if (site?.name) addText(`Site: ${site.name}${site.location ? `, ${site.location}` : ""}`);
+  addText(`Created: ${qt.createdAt ? new Date(qt.createdAt).toLocaleDateString() : ""}`);
+  if (qt.validUntil) addText(`Valid Until: ${new Date(qt.validUntil).toLocaleDateString()}`);
+  if (qt.sentDate) addText(`Sent Date: ${new Date(qt.sentDate).toLocaleDateString()}`);
+  addGap();
+
+  addText("Items", margin, 12, true);
+  addText("Material                                         Qty      Unit     Unit Price     Total", margin, 9, true);
+  addText("--------------------------------------------------------------------------------", margin, 9);
+
+  qt.items.forEach((item: any, index: number) => {
+    const materialLines = wrapText(`${index + 1}. ${item.materialName}`, 44);
+    const firstLine = materialLines[0].padEnd(46, " ");
+    addText(
+      `${firstLine}${String(item.quantityRequested).padStart(8, " ")}  ${String(item.unit).padEnd(7, " ")} ${formatMoney(item.unitPrice).padStart(11, " ")} ${formatMoney(item.totalPrice).padStart(11, " ")}`,
+      margin,
+      9,
+    );
+    materialLines.slice(1).forEach((line) => addText(`   ${line}`, margin, 9));
+    if (item.notes) {
+      wrapText(`Notes: ${item.notes}`, 78).forEach((line) => addText(`   ${line}`, margin, 8));
+    }
+  });
+
+  addGap();
+  addText(`Subtotal: ${formatMoney(qt.subTotal)}`, 390, 10);
+  addText(`Tax (${qt.taxRate || 0}%): ${formatMoney(qt.taxAmount)}`, 390, 10);
+  addText(`Total: ${formatMoney(qt.totalAmount)}`, 390, 12, true);
+
+  if (qt.notes) {
+    addGap();
+    addText("Notes", margin, 12, true);
+    wrapText(qt.notes, 90).forEach((line) => addText(line, margin, 9));
+  }
+
+  if (qt.terms) {
+    addGap();
+    addText("Terms & Conditions", margin, 12, true);
+    wrapText(qt.terms, 90).forEach((line) => addText(line, margin, 9));
+  }
+
+  const objects: string[] = [];
+  const addObject = (body: string) => {
+    objects.push(body);
+    return objects.length;
+  };
+
+  const catalogId = addObject("<< /Type /Catalog /Pages 2 0 R >>");
+  const pagesId = 2;
+  objects.push("");
+  const fontRegularId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  const fontBoldId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
+
+  const pageIds: number[] = [];
+  for (const pageLines of pages) {
+    const content = pageLines.join("\n");
+    const contentId = addObject(`<< /Length ${Buffer.byteLength(content, "utf8")} >>\nstream\n${content}\nendstream`);
+    const pageId = addObject(
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`,
+    );
+    pageIds.push(pageId);
+  }
+
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefOffset = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i < offsets.length; i += 1) {
+    pdf += `${offsets[i].toString().padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return Buffer.from(pdf, "utf8");
+}
+
 // ── GET / — List ──────────────────────────────────────────────────────────────
 
 router.get("/", authenticateToken, async (req, res): Promise<void> => {
@@ -154,6 +442,30 @@ router.get("/:id", authenticateToken, async (req, res): Promise<void> => {
   } catch (err) {
     console.error("Get quotation error:", err);
     res.status(500).json({ error: "Failed to fetch quotation" });
+  }
+});
+
+router.get("/:id/pdf", authenticateToken, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await Quotation.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      company_id: req.user!.company_id,
+    })
+      .populate("site_id", "name location")
+      .populate("createdBy", "name");
+
+    if (!qt) {
+      res.status(404).json({ error: "Quotation not found" });
+      return;
+    }
+
+    const html = buildQuotationHtml(qt as IQuotation);
+    res.setHeader("Content-Type", "text/html");
+    res.send(html);
+  } catch (err) {
+    console.error("Generate quotation PDF error:", err);
+    res.status(500).json({ error: "Failed to generate quotation PDF" });
   }
 });
 

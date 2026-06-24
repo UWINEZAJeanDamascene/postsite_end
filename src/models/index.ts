@@ -44,6 +44,7 @@ export {
 } from "./ActionLog";
 export { PurchaseOrder, IPurchaseOrder, IPOItem } from "./PurchaseOrder";
 export { Supplier, ISupplierDocument } from "./Supplier";
+export { Client, IClientDocument } from "./Client";
 export {
   DeliveryNote,
   IDeliveryNoteDocument,

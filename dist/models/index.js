@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Quotation = exports.PurchaseReturn = exports.DeliveryNote = exports.Supplier = exports.PurchaseOrder = exports.ResourceType = exports.ActionType = exports.ActionLog = exports.createNotification = exports.NotificationPriority = exports.NotificationType = exports.Notification = exports.MovementType = exports.StockMovement = exports.RecordStatus = exports.RecordSource = exports.MainStockRecord = exports.SiteRecord = exports.Material = exports.Site = exports.UserRole = exports.User = void 0;
+exports.Quotation = exports.PurchaseReturn = exports.DeliveryNote = exports.Client = exports.Supplier = exports.PurchaseOrder = exports.ResourceType = exports.ActionType = exports.ActionLog = exports.createNotification = exports.NotificationPriority = exports.NotificationType = exports.Notification = exports.MovementType = exports.StockMovement = exports.RecordStatus = exports.RecordSource = exports.MainStockRecord = exports.SiteRecord = exports.Material = exports.Site = exports.UserRole = exports.User = void 0;
 var User_1 = require("./User");
 Object.defineProperty(exports, "User", { enumerable: true, get: function () { return User_1.User; } });
 Object.defineProperty(exports, "UserRole", { enumerable: true, get: function () { return User_1.UserRole; } });
@@ -30,6 +30,8 @@ var PurchaseOrder_1 = require("./PurchaseOrder");
 Object.defineProperty(exports, "PurchaseOrder", { enumerable: true, get: function () { return PurchaseOrder_1.PurchaseOrder; } });
 var Supplier_1 = require("./Supplier");
 Object.defineProperty(exports, "Supplier", { enumerable: true, get: function () { return Supplier_1.Supplier; } });
+var Client_1 = require("./Client");
+Object.defineProperty(exports, "Client", { enumerable: true, get: function () { return Client_1.Client; } });
 var DeliveryNote_1 = require("./DeliveryNote");
 Object.defineProperty(exports, "DeliveryNote", { enumerable: true, get: function () { return DeliveryNote_1.DeliveryNote; } });
 var PurchaseReturn_1 = require("./PurchaseReturn");
