@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { Quotation, PurchaseOrder, Site, Client } from "../models";
+import { Company, Quotation, PurchaseOrder, Site, Client } from "../models";
 import { IQuotation } from "../models/Quotation";
 import { authenticateToken, requireMainStockManager } from "../middleware/auth";
 import { ActionLogService } from "../services/actionLogService";
@@ -103,16 +103,9 @@ function wrapText(text: string, maxLength: number): string[] {
   return lines.length ? lines : [""];
 }
 
-function buildQuotationHtml(qt: IQuotation): string {
+function buildQuotationHtml(qt: IQuotation, company: { name?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
   const site = qt.site_id as any;
   const client = (qt.client || {}) as {
-    name?: string;
-    contactPerson?: string;
-    email?: string;
-    phone?: string;
-    address?: string;
-  };
-  const supplier = (qt.supplier || {}) as {
     name?: string;
     contactPerson?: string;
     email?: string;
@@ -128,28 +121,29 @@ function buildQuotationHtml(qt: IQuotation): string {
   <style>
     @page { size: A4; margin: 20mm; }
     * { box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; margin: 0; color: #222; background: #fff; }
+    body { font-family: Inter, Arial, sans-serif; margin: 0; color: #1f2937; background: #fff; }
     .page { width: 100%; max-width: 920px; margin: 0 auto; padding: 40px; }
-    .header { text-align: center; margin-bottom: 30px; }
-    .header h1 { margin: 0; font-size: 32px; letter-spacing: 0.08em; }
-    .header p { margin: 10px 0 0; font-size: 18px; color: #475569; }
-    .status { display: inline-flex; margin-top: 14px; padding: 8px 24px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #111827; background: #f3f4f6; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
+    .title-block { max-width: 65%; }
+    .title { margin: 0; font-size: 34px; letter-spacing: 0.12em; text-transform: uppercase; }
+    .subtitle { margin: 10px 0 0; font-size: 16px; color: #4b5563; }
+    .meta-block { text-align: right; }
+    .status { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 18px; border-radius: 999px; background: #f3f4f6; color: #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
     .section { margin-bottom: 28px; }
-    .section-title { font-size: 13px; font-weight: 700; margin-bottom: 14px; color: #475569; text-transform: uppercase; letter-spacing: 0.08em; }
-    .info-grid { display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap: 30px; align-items: start; }
-    .info-block { padding: 18px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 14px; }
-    .info-block p { margin: 8px 0; line-height: 1.65; }
-    .info-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 8px; }
+    .section-title { font-size: 12px; font-weight: 700; margin-bottom: 14px; color: #475569; text-transform: uppercase; letter-spacing: 0.12em; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    .info-block { padding: 22px; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 16px; }
+    .info-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 10px; }
     .info-row:last-child { margin-bottom: 0; }
-    .label { color: #6b7280; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .label { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
     .value { font-weight: 700; color: #111827; text-align: right; }
     table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-    th, td { padding: 14px 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
-    th { background: #f8fafc; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: #374151; }
+    th, td { padding: 14px 12px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
+    th { background: #eef2ff; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: #334155; }
     td.text-right { text-align: right; }
     .totals { margin-top: 24px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
-    .total-row { display: flex; gap: 16px; font-size: 14px; }
-    .total-row strong { min-width: 140px; text-align: right; display: inline-block; }
+    .total-row { display: flex; gap: 18px; font-size: 14px; }
+    .total-row strong { min-width: 150px; text-align: right; display: inline-block; }
     .total-amount { font-size: 17px; font-weight: 700; }
     .footer { margin-top: 42px; padding-top: 22px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px; }
     .no-print { margin-top: 32px; text-align: center; }
@@ -158,49 +152,57 @@ function buildQuotationHtml(qt: IQuotation): string {
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>QUOTATION</h1>
-    <p>${qt.qtNumber}</p>
-    <span class="status">${qt.status?.toUpperCase() || "DRAFT"}</span>
-  </div>
-
-  <div class="section info-grid">
-    <div class="info-block">
-      <div class="section-title">Client</div>
-      <div class="info-row"><span class="label">Name</span><span class="value">${client.name || supplier.name || "-"}</span></div>
-      ${client.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${client.contactPerson}</span></div>` : supplier.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${supplier.contactPerson}</span></div>` : ""}
-      ${client.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${client.email}</span></div>` : supplier.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${supplier.email}</span></div>` : ""}
-      ${client.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${client.phone}</span></div>` : supplier.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${supplier.phone}</span></div>` : ""}
-      ${client.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${client.address}</span></div>` : supplier.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${supplier.address}</span></div>` : ""}
+  <div class="page">
+    <div class="header">
+      <div class="title-block">
+        <h1 class="title">Quotation</h1>
+        <p class="subtitle">${qt.qtNumber}</p>
+      </div>
+      <div class="meta-block">
+        <div class="status">${qt.status?.toUpperCase() || "DRAFT"}</div>
+        ${qt.createdAt ? `<p style="margin: 16px 0 0; font-size: 13px; color: #4b5563;">Created ${new Date(qt.createdAt).toLocaleDateString()}</p>` : ""}
+      </div>
     </div>
-    <div class="info-block">
-      <div class="section-title">Quotation Details</div>
-      <div class="info-row"><span class="label">Site</span><span class="value">${site?.name || "-"}</span></div>
-      ${site?.location ? `<div class="info-row"><span class="label">Location</span><span class="value">${site.location}</span></div>` : ""}
-      <div class="info-row"><span class="label">Created</span><span class="value">${qt.createdAt ? new Date(qt.createdAt).toLocaleDateString() : "-"}</span></div>
-      ${qt.validUntil ? `<div class="info-row"><span class="label">Valid Until</span><span class="value">${new Date(qt.validUntil).toLocaleDateString()}</span></div>` : ""}
-      ${qt.sentDate ? `<div class="info-row"><span class="label">Sent Date</span><span class="value">${new Date(qt.sentDate).toLocaleDateString()}</span></div>` : ""}
-    </div>
-  </div>
 
-  <div class="section">
-    <div class="section-title">Items</div>
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Material</th>
-          <th>Description</th>
-          <th class="text-right">Qty</th>
-          <th class="text-right">Unit</th>
-          <th class="text-right">Unit Price</th>
-          <th class="text-right">Total</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${qt.items
-          .map(
-            (item: any, index: number) => `
+    <div class="section info-grid">
+      <div class="info-block">
+        <div class="section-title">Client</div>
+        <div class="info-row"><span class="label">Name</span><span class="value">${client.name || "-"}</span></div>
+        ${client.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${client.contactPerson}</span></div>` : ""}
+        ${client.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${client.email}</span></div>` : ""}
+        ${client.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${client.phone}</span></div>` : ""}
+        ${client.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${client.address}</span></div>` : ""}
+      </div>
+      <div class="info-block">
+        <div class="section-title">Company</div>
+        <div class="info-row"><span class="label">Name</span><span class="value">${company.name || "-"}</span></div>
+        ${company.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${company.email}</span></div>` : ""}
+        ${company.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${company.phone}</span></div>` : ""}
+        ${company.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${company.address}</span></div>` : ""}
+        ${company.website ? `<div class="info-row"><span class="label">Website</span><span class="value">${company.website}</span></div>` : ""}
+        ${company.taxId ? `<div class="info-row"><span class="label">Tax ID</span><span class="value">${company.taxId}</span></div>` : ""}
+        ${company.industry ? `<div class="info-row"><span class="label">Industry</span><span class="value">${company.industry}</span></div>` : ""}
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Items</div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Material</th>
+            <th>Description</th>
+            <th class="text-right">Qty</th>
+            <th class="text-right">Unit</th>
+            <th class="text-right">Unit Price</th>
+            <th class="text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${qt.items
+            .map(
+              (item: any, index: number) => `
           <tr>
             <td>${index + 1}</td>
             <td><strong>${item.materialName || "-"}</strong></td>
@@ -210,39 +212,31 @@ function buildQuotationHtml(qt: IQuotation): string {
             <td class="text-right">$${Number(item.unitPrice ?? 0).toFixed(2)}</td>
             <td class="text-right">$${Number(item.totalPrice ?? 0).toFixed(2)}</td>
           </tr>`,
-          )
-          .join("")}
-      </tbody>
-    </table>
+            )
+            .join("")}
+        </tbody>
+      </table>
 
-    <div class="totals">
-      <div class="total-row"><strong>Subtotal:</strong> $${Number(qt.subTotal ?? 0).toFixed(2)}</div>
-      <div class="total-row"><strong>Tax (${Number(qt.taxRate ?? 0).toFixed(2)}%):</strong> $${Number(qt.taxAmount ?? 0).toFixed(2)}</div>
-      <div class="total-row total-amount"><strong>Total:</strong> $${Number(qt.totalAmount ?? 0).toFixed(2)}</div>
+      <div class="totals">
+        <div class="total-row"><strong>Subtotal:</strong> $${Number(qt.subTotal ?? 0).toFixed(2)}</div>
+        <div class="total-row"><strong>Tax (${Number(qt.taxRate ?? 0).toFixed(2)}%):</strong> $${Number(qt.taxAmount ?? 0).toFixed(2)}</div>
+        <div class="total-row total-amount"><strong>Total:</strong> $${Number(qt.totalAmount ?? 0).toFixed(2)}</div>
+      </div>
     </div>
-  </div>
 
-  ${qt.notes ? `
-  <div class="section">
-    <div class="section-title">Notes</div>
-    <p>${qt.notes}</p>
-  </div>
-  ` : ""}
+    ${qt.notes ? `
+    <div class="section">
+      <div class="section-title">Notes</div>
+      <p>${qt.notes}</p>
+    </div>
+    ` : ""}
 
-  ${qt.terms ? `
-  <div class="section">
-    <div class="section-title">Terms & Conditions</div>
-    <p>${qt.terms}</p>
-  </div>
-  ` : ""}
-
-  <div class="footer">
-    <p>Generated on ${new Date().toLocaleString()}</p>
-    <p>Multi-site stock management system</p>
-  </div>
-
-  <div class="no-print">
-    <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
+    ${qt.terms ? `
+    <div class="section">
+      <div class="section-title">Terms & Conditions</div>
+      <p>${qt.terms}</p>
+    </div>
+    ` : ""}
   </div>
 </body>
 </html>`;
@@ -288,15 +282,11 @@ function buildQuotationPdf(qt: IQuotation): Buffer {
     address?: string;
   };
   addText("Client", margin, 12, true);
-  addText(client.name || qt.supplier?.name || "");
+  if (client.name) addText(client.name);
   if (client.contactPerson) addText(`Contact: ${client.contactPerson}`);
-  else if (qt.supplier?.contactPerson) addText(`Contact: ${qt.supplier.contactPerson}`);
   if (client.email) addText(`Email: ${client.email}`);
-  else if (qt.supplier?.email) addText(`Email: ${qt.supplier.email}`);
   if (client.phone) addText(`Phone: ${client.phone}`);
-  else if (qt.supplier?.phone) addText(`Phone: ${qt.supplier.phone}`);
   if (client.address) addText(`Address: ${client.address}`);
-  else if (qt.supplier?.address) addText(`Address: ${qt.supplier.address}`);
   addGap();
 
   const site = qt.site_id as any;
@@ -491,7 +481,8 @@ router.get("/:id/pdf", authenticateToken, async (req, res): Promise<void> => {
       return;
     }
 
-    const html = buildQuotationHtml(qt as IQuotation);
+    const company = await Company.findOne({ company_id: req.user!.company_id }).lean() || {};
+    const html = buildQuotationHtml(qt as IQuotation, company as any);
     res.setHeader("Content-Type", "text/html");
     res.send(html);
   } catch (err) {
