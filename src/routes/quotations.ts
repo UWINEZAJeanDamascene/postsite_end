@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { Quotation, PurchaseOrder, Site } from "../models";
+import { Quotation, PurchaseOrder, Site, Client } from "../models";
 import { IQuotation } from "../models/Quotation";
 import { authenticateToken, requireMainStockManager } from "../middleware/auth";
 import { ActionLogService } from "../services/actionLogService";
@@ -51,7 +51,9 @@ function formatQt(qt: IQuotation) {
   return {
     id: (qt as any)._id.toString(),
     qtNumber: qt.qtNumber,
-    supplier: qt.supplier,
+    client_id: (qt.client_id as any)?.toString?.() || undefined,
+    client: qt.client || null,
+    supplier: qt.supplier || null,
     site: qt.site_id,
     status: qt.status,
     items: qt.items,
@@ -103,7 +105,20 @@ function wrapText(text: string, maxLength: number): string[] {
 
 function buildQuotationHtml(qt: IQuotation): string {
   const site = qt.site_id as any;
-  const supplier = qt.supplier || {};
+  const client = (qt.client || {}) as {
+    name?: string;
+    contactPerson?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  };
+  const supplier = (qt.supplier || {}) as {
+    name?: string;
+    contactPerson?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  };
 
   return `<!DOCTYPE html>
 <html>
@@ -151,12 +166,12 @@ function buildQuotationHtml(qt: IQuotation): string {
 
   <div class="section info-grid">
     <div class="info-block">
-      <div class="section-title">Supplier</div>
-      <div class="info-row"><span class="label">Name</span><span class="value">${supplier.name || "-"}</span></div>
-      ${supplier.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${supplier.contactPerson}</span></div>` : ""}
-      ${supplier.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${supplier.email}</span></div>` : ""}
-      ${supplier.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${supplier.phone}</span></div>` : ""}
-      ${supplier.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${supplier.address}</span></div>` : ""}
+      <div class="section-title">Client</div>
+      <div class="info-row"><span class="label">Name</span><span class="value">${client.name || supplier.name || "-"}</span></div>
+      ${client.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${client.contactPerson}</span></div>` : supplier.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${supplier.contactPerson}</span></div>` : ""}
+      ${client.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${client.email}</span></div>` : supplier.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${supplier.email}</span></div>` : ""}
+      ${client.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${client.phone}</span></div>` : supplier.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${supplier.phone}</span></div>` : ""}
+      ${client.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${client.address}</span></div>` : supplier.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${supplier.address}</span></div>` : ""}
     </div>
     <div class="info-block">
       <div class="section-title">Quotation Details</div>
@@ -265,12 +280,23 @@ function buildQuotationPdf(qt: IQuotation): Buffer {
   addText(`Status: ${qt.status.toUpperCase()}`, margin, 10);
   addGap();
 
-  addText("Supplier", margin, 12, true);
-  addText(qt.supplier.name);
-  if (qt.supplier.contactPerson) addText(`Contact: ${qt.supplier.contactPerson}`);
-  if (qt.supplier.email) addText(`Email: ${qt.supplier.email}`);
-  if (qt.supplier.phone) addText(`Phone: ${qt.supplier.phone}`);
-  if (qt.supplier.address) addText(`Address: ${qt.supplier.address}`);
+  const client = (qt.client || {}) as {
+    name?: string;
+    contactPerson?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  };
+  addText("Client", margin, 12, true);
+  addText(client.name || qt.supplier?.name || "");
+  if (client.contactPerson) addText(`Contact: ${client.contactPerson}`);
+  else if (qt.supplier?.contactPerson) addText(`Contact: ${qt.supplier.contactPerson}`);
+  if (client.email) addText(`Email: ${client.email}`);
+  else if (qt.supplier?.email) addText(`Email: ${qt.supplier.email}`);
+  if (client.phone) addText(`Phone: ${client.phone}`);
+  else if (qt.supplier?.phone) addText(`Phone: ${qt.supplier.phone}`);
+  if (client.address) addText(`Address: ${client.address}`);
+  else if (qt.supplier?.address) addText(`Address: ${qt.supplier.address}`);
   addGap();
 
   const site = qt.site_id as any;
@@ -367,6 +393,8 @@ router.get("/", authenticateToken, async (req, res): Promise<void> => {
       status,
       siteId,
       supplier,
+      client,
+      clientId,
       startDate,
       endDate,
       page = "1",
@@ -391,6 +419,9 @@ router.get("/", authenticateToken, async (req, res): Promise<void> => {
     if (siteId && mongoose.Types.ObjectId.isValid(siteId as string))
       where.site_id = new mongoose.Types.ObjectId(siteId as string);
     if (supplier) where["supplier.name"] = { $regex: supplier, $options: "i" };
+    if (clientId && mongoose.Types.ObjectId.isValid(clientId as string))
+      where.client_id = new mongoose.Types.ObjectId(clientId as string);
+    if (client) where["client.name"] = { $regex: client, $options: "i" };
     if (startDate || endDate) {
       where.createdAt = {};
       if (startDate) where.createdAt.$gte = new Date(startDate as string);
@@ -479,6 +510,7 @@ router.post(
     try {
       const company_id = req.user!.company_id;
       const {
+        client_id,
         supplier,
         site_id,
         items,
@@ -488,8 +520,23 @@ router.post(
         terms,
       } = req.body;
 
-      if (!supplier?.name || !items?.length) {
-        res.status(400).json({ error: "Supplier name and items are required" });
+      if (!client_id || !items?.length) {
+        res.status(400).json({ error: "Client and items are required" });
+        return;
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(client_id)) {
+        res.status(400).json({ error: "Invalid client ID" });
+        return;
+      }
+
+      const client = await Client.findOne({
+        _id: new mongoose.Types.ObjectId(client_id),
+        company_id,
+      }).lean();
+
+      if (!client) {
+        res.status(404).json({ error: "Client not found" });
         return;
       }
 
@@ -524,7 +571,15 @@ router.post(
 
       const qt = (await Quotation.create({
         qtNumber,
-        supplier,
+        client_id: new mongoose.Types.ObjectId(client_id),
+        client: {
+          name: client.name,
+          contactPerson: client.contactPerson || "",
+          email: client.email || "",
+          phone: client.phone || "",
+          address: client.address || "",
+        },
+        supplier: supplier || {},
         site_id: site_id ? new mongoose.Types.ObjectId(site_id) : undefined,
         status: "draft",
         items: processedItems,
@@ -540,13 +595,15 @@ router.post(
         req,
         ActionType.CREATE,
         ResourceType.QUOTATION,
-        `Created quotation ${qtNumber} for ${supplier.name}`,
+        `Created quotation ${qtNumber} for ${client.name}`,
         { resourceId: qt._id.toString(), resourceName: qtNumber },
       );
 
       res.status(201).json({
         id: qt._id.toString(),
         qtNumber: qt.qtNumber,
+        client_id: qt.client_id?.toString(),
+        client: qt.client,
         supplier: qt.supplier,
         status: qt.status,
         totalAmount: qt.totalAmount,
@@ -620,7 +677,9 @@ router.put(
 
       const totals = calculateTotals(processedItems, taxRate);
 
-      qt.supplier = supplier;
+      if (supplier) {
+        qt.supplier = supplier;
+      }
       qt.site_id = site_id ? new mongoose.Types.ObjectId(site_id) : undefined;
       qt.items = processedItems as any;
       qt.subTotal = totals.subTotal;
@@ -646,6 +705,9 @@ router.put(
       res.json({
         id: (qt as any)._id.toString(),
         qtNumber: qt.qtNumber,
+        client_id: qt.client_id?.toString(),
+        client: qt.client,
+        supplier: qt.supplier,
         message: "Quotation updated successfully",
       });
     } catch (err) {
@@ -782,7 +844,7 @@ router.patch(
         req,
         ActionType.UPDATE,
         ResourceType.QUOTATION,
-        `Sent quotation ${qt.qtNumber} to ${qt.supplier.name}`,
+        `Sent quotation ${qt.qtNumber} to ${qt.client?.name || qt.supplier?.name || "recipient"}`,
         {
           resourceId: (qt as any)._id.toString(),
           resourceName: qt.qtNumber,

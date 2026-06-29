@@ -14,8 +14,16 @@ export interface IQuotationItem {
 
 export interface IQuotation extends Document {
   qtNumber: string;
-  supplier: {
+  client_id?: mongoose.Types.ObjectId;
+  client?: {
     name: string;
+    contactPerson?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  };
+  supplier?: {
+    name?: string;
     contactPerson?: string;
     email?: string;
     phone?: string;
@@ -53,8 +61,16 @@ const QuotationItemSchema: Schema = new Schema({
 const QuotationSchema: Schema = new Schema(
   {
     qtNumber: { type: String, required: true, unique: true },
+    client_id: { type: Schema.Types.ObjectId, ref: 'Client', default: null },
+    client: {
+      name: { type: String, default: '' },
+      contactPerson: { type: String, default: '' },
+      email: { type: String, default: '' },
+      phone: { type: String, default: '' },
+      address: { type: String, default: '' },
+    },
     supplier: {
-      name: { type: String, required: true },
+      name: { type: String, default: '' },
       contactPerson: { type: String, default: '' },
       email: { type: String, default: '' },
       phone: { type: String, default: '' },
@@ -84,6 +100,7 @@ const QuotationSchema: Schema = new Schema(
 
 QuotationSchema.index({ company_id: 1, status: 1 });
 QuotationSchema.index({ company_id: 1, site_id: 1 });
+QuotationSchema.index({ company_id: 1, client_id: 1 });
 QuotationSchema.index({ qtNumber: 1 });
 
 export const Quotation = mongoose.model<IQuotation>('Quotation', QuotationSchema);
