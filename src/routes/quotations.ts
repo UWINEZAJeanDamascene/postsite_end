@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { Company, Quotation, PurchaseOrder, Site, Client } from "../models";
+import { Company, Quotation, Invoice, Site, Client } from "../models";
 import { IQuotation } from "../models/Quotation";
 import { authenticateToken, requireMainStockManager } from "../middleware/auth";
 import { ActionLogService } from "../services/actionLogService";
@@ -26,16 +26,16 @@ async function generateQTNumber(company_id: string): Promise<string> {
   return `${prefix}${seq.toString().padStart(4, "0")}`;
 }
 
-async function generatePONumber(company_id: string): Promise<string> {
+async function generateInvoiceNumber(company_id: string): Promise<string> {
   const year = new Date().getFullYear();
-  const prefix = `PO-${year}-`;
-  const last = await PurchaseOrder.findOne(
-    { company_id, poNumber: { $regex: `^${prefix}` } },
-    { poNumber: 1 },
-  ).sort({ poNumber: -1 });
+  const prefix = `INV-${year}-`;
+  const last = await Invoice.findOne(
+    { company_id, invoiceNumber: { $regex: `^${prefix}` } },
+    { invoiceNumber: 1 },
+  ).sort({ invoiceNumber: -1 });
   let seq = 1;
   if (last) {
-    const n = parseInt(last.poNumber.split("-")[2], 10);
+    const n = parseInt(last.invoiceNumber.split("-")[2], 10);
     if (!isNaN(n)) seq = n + 1;
   }
   return `${prefix}${seq.toString().padStart(4, "0")}`;
@@ -66,6 +66,7 @@ function formatQt(qt: IQuotation) {
     terms: qt.terms,
     sentDate: qt.sentDate,
     convertedToPO: qt.convertedToPO,
+    convertedToInvoice: qt.convertedToInvoice,
     createdBy: (qt.createdBy as any)?.name || qt.createdBy,
     createdAt: qt.createdAt,
     updatedAt: qt.updatedAt,
@@ -103,8 +104,40 @@ function wrapText(text: string, maxLength: number): string[] {
   return lines.length ? lines : [""];
 }
 
-function buildQuotationHtml(qt: IQuotation, company: { name?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
-  const site = qt.site_id as any;
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatRwf(value: number | undefined): string {
+  return Number(value || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
+
+function formatQty(value: number | undefined): string {
+  return Number(value || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatLongDate(value?: Date): string {
+  const date = value ? new Date(value) : new Date();
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
   const client = (qt.client || {}) as {
     name?: string;
     contactPerson?: string;
@@ -112,136 +145,176 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; address?: 
     phone?: string;
     address?: string;
   };
+  const site = qt.site_id as any;
+  const companyName = escapeHtml(company.name || "Lilstock");
+  const companyAddress = escapeHtml(company.address || "");
+  const companyPhone = escapeHtml(company.phone || "");
+  const companyEmail = escapeHtml(company.email || "");
+  const companyWebsite = escapeHtml(company.website || "");
+  const companyTin = escapeHtml(company.taxId || "");
+  const logoSrc = typeof company.logo === "string" && company.logo.startsWith("data:image/") ? company.logo : "";
+  const taxRate = Number(qt.taxRate || 0);
+  const subtotalLabel = taxRate > 0 ? "Total Amount Vat Exclusive" : "Subtotal";
+  const validityDays = qt.validUntil
+    ? Math.max(1, Math.ceil((new Date(qt.validUntil).getTime() - new Date(qt.createdAt || new Date()).getTime()) / (1000 * 60 * 60 * 24)))
+    : 30;
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Quotation ${qt.qtNumber}</title>
+  <title>Quotation ${escapeHtml(qt.qtNumber)}</title>
   <style>
-    @page { size: A4; margin: 20mm; }
+    @page { size: A4; margin: 14mm; }
     * { box-sizing: border-box; }
-    body { font-family: Inter, Arial, sans-serif; margin: 0; color: #1f2937; background: #fff; }
-    .page { width: 100%; max-width: 920px; margin: 0 auto; padding: 40px; }
-    .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 32px; }
-    .title-block { max-width: 65%; }
-    .title { margin: 0; font-size: 34px; letter-spacing: 0.12em; text-transform: uppercase; }
-    .subtitle { margin: 10px 0 0; font-size: 16px; color: #4b5563; }
-    .meta-block { text-align: right; }
-    .status { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 18px; border-radius: 999px; background: #f3f4f6; color: #111827; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-    .section { margin-bottom: 28px; }
-    .section-title { font-size: 12px; font-weight: 700; margin-bottom: 14px; color: #475569; text-transform: uppercase; letter-spacing: 0.12em; }
-    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-    .info-block { padding: 22px; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 16px; }
-    .info-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 10px; }
-    .info-row:last-child { margin-bottom: 0; }
-    .label { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
-    .value { font-weight: 700; color: #111827; text-align: right; }
-    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-    th, td { padding: 14px 12px; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
-    th { background: #eef2ff; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: #334155; }
-    td.text-right { text-align: right; }
-    .totals { margin-top: 24px; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
-    .total-row { display: flex; gap: 18px; font-size: 14px; }
-    .total-row strong { min-width: 150px; text-align: right; display: inline-block; }
-    .total-amount { font-size: 17px; font-weight: 700; }
-    .footer { margin-top: 42px; padding-top: 22px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 12px; }
-    .no-print { margin-top: 32px; text-align: center; }
-    .print-button { padding: 10px 28px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 14px; }
-    @media print { .page { padding: 0; } .no-print { display: none; } }
+    body { margin: 0; background: #f3f4f6; color: #111; font-family: "Times New Roman", Times, serif; }
+    .page { width: 100%; max-width: 980px; margin: 0 auto; padding: 28px; background: #fff; }
+    .document { border: 2px solid #111; min-height: 900px; background: #fff; }
+    .header { display: grid; grid-template-columns: 42% 58%; min-height: 138px; border-bottom: 1.5px solid #111; }
+    .brand { display: flex; align-items: center; padding: 14px 18px 10px; }
+    .logo { max-width: 245px; max-height: 105px; object-fit: contain; }
+    .logo-fallback { font-family: Arial, sans-serif; font-size: 38px; font-weight: 800; color: #174f80; letter-spacing: 0.02em; }
+    .company-info { padding: 16px 18px 10px; text-align: right; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.38; }
+    .company-info strong { font-size: 16px; }
+    .title-band { background: #174f80; color: #fff; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; font-size: 15px; }
+    .bill-row { display: grid; grid-template-columns: 57% 43%; border-bottom: 1.5px solid #111; min-height: 70px; }
+    .bill-to { border-right: 1.5px solid #111; display: grid; grid-template-columns: 120px 1fr; }
+    .bill-label { padding: 6px 12px; font-weight: 700; text-align: center; }
+    .client-box { padding: 12px 10px 8px; text-align: center; font-size: 14px; }
+    .meta { padding: 10px 18px; font-size: 14px; }
+    .meta-row { display: grid; grid-template-columns: 95px 1fr; gap: 10px; margin-bottom: 8px; }
+    .meta-label { font-weight: 700; font-style: italic; text-align: right; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+    th, td { border-right: 1.5px solid #111; border-bottom: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
+    th:last-child, td:last-child { border-right: 0; }
+    th { font-weight: 700; text-align: center; }
+    .col-no { width: 8%; text-align: right; }
+    .col-desc { width: 48%; }
+    .col-unit { width: 7%; text-align: center; }
+    .col-qty { width: 11%; text-align: right; }
+    .col-rate { width: 14%; text-align: right; }
+    .col-total { width: 16%; text-align: right; }
+    .description-cell { line-height: 1.3; }
+    .terms-total { display: grid; grid-template-columns: 63% 37%; border-bottom: 1.5px solid #111; }
+    .terms { padding: 5px 4px; min-height: 58px; font-size: 13px; line-height: 1.45; }
+    .totals table td { border-bottom: 1.5px solid #174f80; border-right: 1.5px solid #174f80; padding: 4px 8px; font-weight: 700; }
+    .totals table td:last-child { border-right: 0; text-align: right; }
+    .footer { min-height: 140px; display: grid; grid-template-columns: 45% 25% 30%; align-items: center; padding: 16px 72px; gap: 18px; }
+    .signature-name { font-weight: 700; font-size: 14px; line-height: 1.3; }
+    .signature-title { font-weight: 700; font-size: 14px; line-height: 1.3; margin-top: 4px; }
+    .stamp { text-align: center; color: #174f80; font-family: Arial, sans-serif; font-weight: 800; }
+    .stamp-mark { width: 98px; height: 98px; border: 3px solid #174f80; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 26px; opacity: 0.75; }
+    .footer-note { text-align: right; color: #374151; font-family: Arial, sans-serif; font-size: 11px; line-height: 1.4; }
+    .no-print { margin-top: 20px; text-align: center; }
+    .print-button { padding: 10px 24px; border: 0; border-radius: 6px; background: #174f80; color: #fff; cursor: pointer; font-family: Arial, sans-serif; }
+    @media print {
+      body { background: #fff; }
+      .page { padding: 0; max-width: none; }
+      .no-print { display: none; }
+      .document { min-height: calc(100vh - 2px); }
+    }
   </style>
 </head>
 <body>
   <div class="page">
-    <div class="header">
-      <div class="title-block">
-        <h1 class="title">Quotation</h1>
-        <p class="subtitle">${qt.qtNumber}</p>
+    <div class="document">
+      <div class="header">
+        <div class="brand">
+          ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="${companyName} logo">` : `<div class="logo-fallback">${companyName}</div>`}
+        </div>
+        <div class="company-info">
+          <strong>${companyName}</strong><br>
+          ${companyTin ? `TIN: ${companyTin}<br>` : ""}
+          ${companyAddress ? `${companyAddress}<br>` : ""}
+          ${companyPhone ? `Phone: ${companyPhone}<br>` : ""}
+          ${companyEmail ? `Email: ${companyEmail}<br>` : ""}
+          ${companyWebsite ? `Website: ${companyWebsite}<br>` : ""}
+          ${site?.name ? `Site: ${escapeHtml(site.name)}${site?.location ? `, ${escapeHtml(site.location)}` : ""}` : ""}
+        </div>
       </div>
-      <div class="meta-block">
-        <div class="status">${qt.status?.toUpperCase() || "DRAFT"}</div>
-        ${qt.createdAt ? `<p style="margin: 16px 0 0; font-size: 13px; color: #4b5563;">Created ${new Date(qt.createdAt).toLocaleDateString()}</p>` : ""}
-      </div>
-    </div>
 
-    <div class="section info-grid">
-      <div class="info-block">
-        <div class="section-title">Client</div>
-        <div class="info-row"><span class="label">Name</span><span class="value">${client.name || "-"}</span></div>
-        ${client.contactPerson ? `<div class="info-row"><span class="label">Contact</span><span class="value">${client.contactPerson}</span></div>` : ""}
-        ${client.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${client.email}</span></div>` : ""}
-        ${client.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${client.phone}</span></div>` : ""}
-        ${client.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${client.address}</span></div>` : ""}
-      </div>
-      <div class="info-block">
-        <div class="section-title">Company</div>
-        <div class="info-row"><span class="label">Name</span><span class="value">${company.name || "-"}</span></div>
-        ${company.email ? `<div class="info-row"><span class="label">Email</span><span class="value">${company.email}</span></div>` : ""}
-        ${company.phone ? `<div class="info-row"><span class="label">Phone</span><span class="value">${company.phone}</span></div>` : ""}
-        ${company.address ? `<div class="info-row"><span class="label">Address</span><span class="value">${company.address}</span></div>` : ""}
-        ${company.website ? `<div class="info-row"><span class="label">Website</span><span class="value">${company.website}</span></div>` : ""}
-        ${company.taxId ? `<div class="info-row"><span class="label">Tax ID</span><span class="value">${company.taxId}</span></div>` : ""}
-        ${company.industry ? `<div class="info-row"><span class="label">Industry</span><span class="value">${company.industry}</span></div>` : ""}
-      </div>
-    </div>
+      <div class="title-band">DISCOUNTED QUOTATION</div>
 
-    <div class="section">
-      <div class="section-title">Items</div>
+      <div class="bill-row">
+        <div class="bill-to">
+          <div class="bill-label">BILL TO:</div>
+          <div class="client-box">
+            <strong>${escapeHtml(client.name || "-")}</strong>
+            ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
+            ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
+            ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
+            ${client.address ? `<br>${escapeHtml(client.address)}` : ""}
+          </div>
+        </div>
+        <div class="meta">
+          <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
+          <div class="meta-row"><div class="meta-label">Quote No:</div><div><strong>${escapeHtml(qt.qtNumber)}</strong></div></div>
+          ${qt.validUntil ? `<div class="meta-row"><div class="meta-label">Valid Until:</div><div>${new Date(qt.validUntil).toLocaleDateString()}</div></div>` : ""}
+        </div>
+      </div>
+
       <table>
         <thead>
           <tr>
-            <th>#</th>
-            <th>Material</th>
-            <th>Description</th>
-            <th class="text-right">Qty</th>
-            <th class="text-right">Unit</th>
-            <th class="text-right">Unit Price</th>
-            <th class="text-right">Total</th>
+            <th class="col-no">SINO</th>
+            <th class="col-desc">DESCRIPTION</th>
+            <th class="col-unit">UNIT</th>
+            <th class="col-qty">Qty</th>
+            <th class="col-rate">Unit rate<br>(RWF)</th>
+            <th class="col-total">Total Amount<br>(RWF)</th>
           </tr>
         </thead>
         <tbody>
-          ${qt.items
-            .map(
-              (item: any, index: number) => `
+          ${qt.items.map((item: any, index: number) => `
           <tr>
-            <td>${index + 1}</td>
-            <td><strong>${item.materialName || "-"}</strong></td>
-            <td>${item.description || "-"}</td>
-            <td class="text-right">${item.quantityRequested ?? 0}</td>
-            <td class="text-right">${item.unit || "-"}</td>
-            <td class="text-right">$${Number(item.unitPrice ?? 0).toFixed(2)}</td>
-            <td class="text-right">$${Number(item.totalPrice ?? 0).toFixed(2)}</td>
-          </tr>`,
-            )
-            .join("")}
+            <td class="col-no">${index + 1}</td>
+            <td class="description-cell">${escapeHtml(item.description || item.materialName || "-")}</td>
+            <td class="col-unit">${escapeHtml(item.unit || "-")}</td>
+            <td class="col-qty">${formatQty(item.quantityRequested)}</td>
+            <td class="col-rate">${formatRwf(item.unitPrice)}</td>
+            <td class="col-total">${formatRwf(item.totalPrice)}</td>
+          </tr>`).join("")}
         </tbody>
       </table>
 
-      <div class="totals">
-        <div class="total-row"><strong>Subtotal:</strong> $${Number(qt.subTotal ?? 0).toFixed(2)}</div>
-        <div class="total-row"><strong>Tax (${Number(qt.taxRate ?? 0).toFixed(2)}%):</strong> $${Number(qt.taxAmount ?? 0).toFixed(2)}</div>
-        <div class="total-row total-amount"><strong>Total:</strong> $${Number(qt.totalAmount ?? 0).toFixed(2)}</div>
+      <div class="terms-total">
+        <div class="terms">
+          Quote validity : ${validityDays} days<br>
+          ${qt.validUntil ? `Valid until : ${new Date(qt.validUntil).toLocaleDateString()}<br>` : ""}
+          ${qt.notes ? `${escapeHtml(qt.notes)}<br>` : ""}
+          ${qt.terms ? escapeHtml(qt.terms) : "Otherwise terms and conditions apply"}
+        </div>
+        <div class="totals">
+          <table>
+            <tr><td>${subtotalLabel}</td><td>${formatRwf(qt.subTotal)}</td></tr>
+            <tr><td>VAT (${formatQty(taxRate).replace(".00", "")}%)</td><td>${formatRwf(qt.taxAmount)}</td></tr>
+            <tr><td>Total Amount VAT</td><td>${formatRwf(qt.totalAmount)}</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div>
+          <div class="signature-name">${escapeHtml((qt.createdBy as any)?.name || "Authorized Person")}</div>
+          <div class="signature-title">For ${companyName}</div>
+          ${company.industry ? `<div class="signature-title">${escapeHtml(company.industry)}</div>` : ""}
+        </div>
+        <div class="stamp"><div class="stamp-mark">${escapeHtml((company.name || "LS").slice(0, 3).toUpperCase())}</div></div>
+        <div class="footer-note">
+          ${company.description ? `${escapeHtml(company.description)}<br>` : ""}
+          ${companyEmail ? `${companyEmail}<br>` : ""}
+          ${companyPhone ? companyPhone : ""}
+        </div>
       </div>
     </div>
 
-    ${qt.notes ? `
-    <div class="section">
-      <div class="section-title">Notes</div>
-      <p>${qt.notes}</p>
+    <div class="no-print">
+      <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
     </div>
-    ` : ""}
-
-    ${qt.terms ? `
-    <div class="section">
-      <div class="section-title">Terms & Conditions</div>
-      <p>${qt.terms}</p>
-    </div>
-    ` : ""}
   </div>
 </body>
 </html>`;
 }
-
 function buildQuotationPdf(qt: IQuotation): Buffer {
   const pageWidth = 595;
   const pageHeight = 842;
@@ -481,7 +554,12 @@ router.get("/:id/pdf", authenticateToken, async (req, res): Promise<void> => {
       return;
     }
 
-    const company = await Company.findOne({ company_id: req.user!.company_id }).lean() || {};
+    const company = (await Company.findOne({ company_id: req.user!.company_id }).lean()) ||
+      (mongoose.Types.ObjectId.isValid(req.user!.company_id)
+        ? await Company.findById(req.user!.company_id).lean()
+        : null) ||
+      (await Company.findOne({ name: "Lilstock" }).lean()) ||
+      {};
     const html = buildQuotationHtml(qt as IQuotation, company as any);
     res.setHeader("Content-Type", "text/html");
     res.send(html);
@@ -952,7 +1030,7 @@ router.patch(
   },
 );
 
-// ── POST /:id/convert — Convert accepted quotation to PO ──────────────────────
+// Convert accepted quotation to invoice
 
 router.post(
   "/:id/convert",
@@ -973,87 +1051,84 @@ router.post(
       }
       if (qt.status !== "accepted") {
         res.status(400).json({
-          error:
-            "Only accepted quotations can be converted to a purchase order",
+          error: "Only accepted quotations can be converted to an invoice",
         });
         return;
       }
-      if (qt.convertedToPO) {
+      if (qt.convertedToInvoice) {
         res.status(400).json({
-          error:
-            "This quotation has already been converted to a purchase order",
-        });
-        return;
-      }
-      if (!qt.site_id) {
-        res.status(400).json({
-          error:
-            "Quotation must have a site assigned before converting to purchase order. Please edit the quotation and add a site.",
+          error: "This quotation has already been converted to an invoice",
         });
         return;
       }
 
-      const site = await Site.findOne({ _id: qt.site_id, company_id });
-      if (!site) {
-        res.status(404).json({ error: "Site not found" });
-        return;
-      }
-
-      const poNumber = await generatePONumber(company_id);
-
-      const poItems = qt.items.map((item: any) => ({
+      const invoiceNumber = await generateInvoiceNumber(company_id);
+      const dueDate = qt.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const invoiceItems = qt.items.map((item: any) => ({
         materialName: item.materialName,
         material_id: item.material_id || null,
         description: item.description || "",
-        quantityOrdered: item.quantityRequested,
-        quantityReceived: 0,
+        quantity: item.quantityRequested,
         unitPrice: item.unitPrice,
         totalPrice: item.totalPrice,
         unit: item.unit,
         notes: item.notes || "",
       }));
 
-      const po = (await PurchaseOrder.create({
-        poNumber,
-        supplier: qt.supplier,
-        site_id: qt.site_id,
+      const invoice = (await Invoice.create({
+        invoiceNumber,
+        quotation_id: (qt as any)._id,
+        qtNumber: qt.qtNumber,
+        client_id: qt.client_id || undefined,
+        client: {
+          name: qt.client?.name || qt.supplier?.name || "Client",
+          contactPerson: qt.client?.contactPerson || qt.supplier?.contactPerson || "",
+          email: qt.client?.email || qt.supplier?.email || "",
+          phone: qt.client?.phone || qt.supplier?.phone || "",
+          address: qt.client?.address || qt.supplier?.address || "",
+        },
+        site_id: qt.site_id || undefined,
         status: "draft",
-        items: poItems,
+        items: invoiceItems,
         subTotal: qt.subTotal,
         taxRate: qt.taxRate,
         taxAmount: qt.taxAmount,
         totalAmount: qt.totalAmount,
+        amountPaid: 0,
+        balanceDue: qt.totalAmount,
+        issueDate: new Date(),
+        dueDate,
         notes: qt.notes,
         terms: qt.terms,
-        expectedDeliveryDate: qt.validUntil || undefined,
         createdBy: new mongoose.Types.ObjectId(req.user!.id),
         company_id,
       })) as any;
 
-      qt.convertedToPO = po._id as mongoose.Types.ObjectId;
+      qt.convertedToInvoice = invoice._id as mongoose.Types.ObjectId;
       await qt.save();
 
       await ActionLogService.logFromRequest(
         req,
         ActionType.CREATE,
-        ResourceType.PURCHASE_ORDER,
-        `Converted quotation ${qt.qtNumber} to purchase order ${poNumber}`,
-        { resourceId: po._id.toString(), resourceName: poNumber },
+        ResourceType.INVOICE,
+        `Converted quotation ${qt.qtNumber} to invoice ${invoiceNumber}`,
+        { resourceId: invoice._id.toString(), resourceName: invoiceNumber },
       );
 
       res.status(201).json({
         id: (qt as any)._id.toString(),
         qtNumber: qt.qtNumber,
-        convertedToPO: { id: po._id.toString(), poNumber },
-        message: `Quotation converted to purchase order ${poNumber}`,
+        convertedToInvoice: { id: invoice._id.toString(), invoiceNumber },
+        message: `Quotation converted to invoice ${invoiceNumber}`,
       });
     } catch (err) {
       console.error("Convert quotation error:", err);
-      res
-        .status(500)
-        .json({ error: "Failed to convert quotation to purchase order" });
+      res.status(500).json({ error: "Failed to convert quotation to invoice" });
     }
   },
 );
-
 export default router;
+
+
+
+

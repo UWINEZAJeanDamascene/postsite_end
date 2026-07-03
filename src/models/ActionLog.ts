@@ -26,6 +26,7 @@ export enum ResourceType {
   COMPANY = "company",
   PURCHASE_ORDER = "purchase_order",
   QUOTATION = "quotation",
+  INVOICE = "invoice",
   CLIENT = "client",
 }
 
@@ -102,3 +103,5 @@ export const ActionLog = mongoose.model<IActionLogDocument, IActionLogModel>(
   ActionLogSchema,
 );
 export default ActionLog;
+
+

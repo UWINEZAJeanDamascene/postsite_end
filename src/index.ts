@@ -26,6 +26,7 @@ import deliveryNoteRoutes from "./routes/deliveryNotes";
 import purchaseReturnRoutes from "./routes/purchaseReturns";
 import quotationRoutes from "./routes/quotations";
 import clientRoutes from "./routes/clients";
+import invoiceRoutes from "./routes/invoices";
 
 const app = express();
 
@@ -96,6 +97,7 @@ app.get("/", (_req, res) => {
       "main-stock": "/main-stock/*",
       "purchase-orders": "/purchase-orders/*",
       quotations: "/quotations/*",
+      invoices: "/invoices/*",
       clients: "/clients/*",
       // Add other endpoints as needed
     },
@@ -171,6 +173,8 @@ app.use("/delivery-notes", deliveryNoteRoutes);
 app.use("/purchase-returns", purchaseReturnRoutes);
 app.use("/quotations", quotationRoutes);
 app.use("/api/quotations", quotationRoutes);
+app.use("/invoices", invoiceRoutes);
+app.use("/api/invoices", invoiceRoutes);
 app.use("/clients", clientRoutes);
 console.log("Routes registered successfully");
 
@@ -243,3 +247,7 @@ async function startServer() {
 startServer();
 
 export default app;
+
+
+
+

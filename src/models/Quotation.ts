@@ -41,6 +41,7 @@ export interface IQuotation extends Document {
   terms?: string;
   sentDate?: Date;
   convertedToPO?: mongoose.Types.ObjectId;
+  convertedToInvoice?: mongoose.Types.ObjectId;
   createdBy: mongoose.Types.ObjectId;
   company_id: string;
   createdAt: Date;
@@ -92,6 +93,7 @@ const QuotationSchema: Schema = new Schema(
     terms: { type: String, default: '' },
     sentDate: { type: Date, default: null },
     convertedToPO: { type: Schema.Types.ObjectId, ref: 'PurchaseOrder', default: null },
+    convertedToInvoice: { type: Schema.Types.ObjectId, ref: 'Invoice', default: null },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     company_id: { type: String, required: true, index: true },
   },
@@ -105,3 +107,5 @@ QuotationSchema.index({ qtNumber: 1 });
 
 export const Quotation = mongoose.model<IQuotation>('Quotation', QuotationSchema);
 export default Quotation;
+
+

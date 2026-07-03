@@ -43,6 +43,7 @@ export {
   ResourceType,
 } from "./ActionLog";
 export { PurchaseOrder, IPurchaseOrder, IPOItem } from "./PurchaseOrder";
+export { Invoice, IInvoice, IInvoiceItem } from "./Invoice";
 export { Supplier, ISupplierDocument } from "./Supplier";
 export { Company, ICompany } from "./Company";
 export { Client, IClientDocument } from "./Client";
@@ -57,3 +58,5 @@ export {
   IPurchaseReturnItem,
 } from "./PurchaseReturn";
 export { Quotation, IQuotation, IQuotationItem } from "./Quotation";
+
+
