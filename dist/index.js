@@ -127,6 +127,7 @@ app.get("/health", async (_req, res) => {
                 timestamp: new Date().toISOString(),
                 database: "connected",
                 environment: config_1.config.NODE_ENV,
+                routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
             });
         }
         else {
