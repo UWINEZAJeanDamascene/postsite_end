@@ -115,6 +115,7 @@ app.get("/health", async (_req, res) => {
         timestamp: new Date().toISOString(),
         database: "connected",
         environment: config.NODE_ENV,
+        routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
       });
     } else {
       throw new Error("Database not connected");
@@ -247,6 +248,7 @@ async function startServer() {
 startServer();
 
 export default app;
+
 
 
 

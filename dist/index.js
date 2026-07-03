@@ -49,6 +49,7 @@ const deliveryNotes_1 = __importDefault(require("./routes/deliveryNotes"));
 const purchaseReturns_1 = __importDefault(require("./routes/purchaseReturns"));
 const quotations_1 = __importDefault(require("./routes/quotations"));
 const clients_1 = __importDefault(require("./routes/clients"));
+const invoices_1 = __importDefault(require("./routes/invoices"));
 const app = (0, express_1.default)();
 // Middleware
 app.use((0, helmet_1.default)({
@@ -109,6 +110,7 @@ app.get("/", (_req, res) => {
             "main-stock": "/main-stock/*",
             "purchase-orders": "/purchase-orders/*",
             quotations: "/quotations/*",
+            invoices: "/invoices/*",
             clients: "/clients/*",
             // Add other endpoints as needed
         },
@@ -181,6 +183,8 @@ app.use("/delivery-notes", deliveryNotes_1.default);
 app.use("/purchase-returns", purchaseReturns_1.default);
 app.use("/quotations", quotations_1.default);
 app.use("/api/quotations", quotations_1.default);
+app.use("/invoices", invoices_1.default);
+app.use("/api/invoices", invoices_1.default);
 app.use("/clients", clients_1.default);
 console.log("Routes registered successfully");
 // Error handling middleware

@@ -24,13 +24,13 @@ async function generateQTNumber(company_id) {
     }
     return `${prefix}${seq.toString().padStart(4, "0")}`;
 }
-async function generatePONumber(company_id) {
+async function generateInvoiceNumber(company_id) {
     const year = new Date().getFullYear();
-    const prefix = `PO-${year}-`;
-    const last = await models_1.PurchaseOrder.findOne({ company_id, poNumber: { $regex: `^${prefix}` } }, { poNumber: 1 }).sort({ poNumber: -1 });
+    const prefix = `INV-${year}-`;
+    const last = await models_1.Invoice.findOne({ company_id, invoiceNumber: { $regex: `^${prefix}` } }, { invoiceNumber: 1 }).sort({ invoiceNumber: -1 });
     let seq = 1;
     if (last) {
-        const n = parseInt(last.poNumber.split("-")[2], 10);
+        const n = parseInt(last.invoiceNumber.split("-")[2], 10);
         if (!isNaN(n))
             seq = n + 1;
     }
@@ -45,7 +45,9 @@ function formatQt(qt) {
     return {
         id: qt._id.toString(),
         qtNumber: qt.qtNumber,
-        supplier: qt.supplier,
+        client_id: qt.client_id?.toString?.() || undefined,
+        client: qt.client || null,
+        supplier: qt.supplier || null,
         site: qt.site_id,
         status: qt.status,
         items: qt.items,
@@ -58,6 +60,7 @@ function formatQt(qt) {
         terms: qt.terms,
         sentDate: qt.sentDate,
         convertedToPO: qt.convertedToPO,
+        convertedToInvoice: qt.convertedToInvoice,
         createdBy: qt.createdBy?.name || qt.createdBy,
         createdAt: qt.createdAt,
         updatedAt: qt.updatedAt,
@@ -91,6 +94,206 @@ function wrapText(text, maxLength) {
         lines.push(current);
     return lines.length ? lines : [""];
 }
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+function formatRwf(value) {
+    return Number(value || 0).toLocaleString("en-US", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+    });
+}
+function formatQty(value) {
+    return Number(value || 0).toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+}
+function formatLongDate(value) {
+    const date = value ? new Date(value) : new Date();
+    return date.toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+    });
+}
+function buildQuotationHtml(qt, company) {
+    const client = (qt.client || {});
+    const site = qt.site_id;
+    const companyName = escapeHtml(company.name || "Lilstock");
+    const companyAddress = escapeHtml(company.address || "");
+    const companyPhone = escapeHtml(company.phone || "");
+    const companyEmail = escapeHtml(company.email || "");
+    const companyWebsite = escapeHtml(company.website || "");
+    const companyTin = escapeHtml(company.taxId || "");
+    const logoSrc = typeof company.logo === "string" && company.logo.startsWith("data:image/") ? company.logo : "";
+    const taxRate = Number(qt.taxRate || 0);
+    const subtotalLabel = taxRate > 0 ? "Total Amount Vat Exclusive" : "Subtotal";
+    const validityDays = qt.validUntil
+        ? Math.max(1, Math.ceil((new Date(qt.validUntil).getTime() - new Date(qt.createdAt || new Date()).getTime()) / (1000 * 60 * 60 * 24)))
+        : 30;
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Quotation ${escapeHtml(qt.qtNumber)}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f4f6; color: #111; font-family: "Times New Roman", Times, serif; }
+    .page { width: 100%; max-width: 980px; margin: 0 auto; padding: 28px; background: #fff; }
+    .document { border: 2px solid #111; min-height: 900px; background: #fff; }
+    .header { display: grid; grid-template-columns: 42% 58%; min-height: 138px; border-bottom: 1.5px solid #111; }
+    .brand { display: flex; align-items: center; padding: 14px 18px 10px; }
+    .logo { max-width: 245px; max-height: 105px; object-fit: contain; }
+    .logo-fallback { font-family: Arial, sans-serif; font-size: 38px; font-weight: 800; color: #174f80; letter-spacing: 0.02em; }
+    .company-info { padding: 16px 18px 10px; text-align: right; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.38; }
+    .company-info strong { font-size: 16px; }
+    .title-band { background: #174f80; color: #fff; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; font-size: 15px; }
+    .bill-row { display: grid; grid-template-columns: 57% 43%; border-bottom: 1.5px solid #111; min-height: 70px; }
+    .bill-to { border-right: 1.5px solid #111; display: grid; grid-template-columns: 120px 1fr; }
+    .bill-label { padding: 6px 12px; font-weight: 700; text-align: center; }
+    .client-box { padding: 12px 10px 8px; text-align: center; font-size: 14px; }
+    .meta { padding: 10px 18px; font-size: 14px; }
+    .meta-row { display: grid; grid-template-columns: 95px 1fr; gap: 10px; margin-bottom: 8px; }
+    .meta-label { font-weight: 700; font-style: italic; text-align: right; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+    th, td { border-right: 1.5px solid #111; border-bottom: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
+    th:last-child, td:last-child { border-right: 0; }
+    th { font-weight: 700; text-align: center; }
+    .col-no { width: 8%; text-align: right; }
+    .col-desc { width: 48%; }
+    .col-unit { width: 7%; text-align: center; }
+    .col-qty { width: 11%; text-align: right; }
+    .col-rate { width: 14%; text-align: right; }
+    .col-total { width: 16%; text-align: right; }
+    .description-cell { line-height: 1.3; }
+    .terms-total { display: grid; grid-template-columns: 63% 37%; border-bottom: 1.5px solid #111; }
+    .terms { padding: 5px 4px; min-height: 58px; font-size: 13px; line-height: 1.45; }
+    .totals table td { border-bottom: 1.5px solid #174f80; border-right: 1.5px solid #174f80; padding: 4px 8px; font-weight: 700; }
+    .totals table td:last-child { border-right: 0; text-align: right; }
+    .footer { min-height: 140px; display: grid; grid-template-columns: 45% 25% 30%; align-items: center; padding: 16px 72px; gap: 18px; }
+    .signature-name { font-weight: 700; font-size: 14px; line-height: 1.3; }
+    .signature-title { font-weight: 700; font-size: 14px; line-height: 1.3; margin-top: 4px; }
+    .stamp { text-align: center; color: #174f80; font-family: Arial, sans-serif; font-weight: 800; }
+    .stamp-mark { width: 98px; height: 98px; border: 3px solid #174f80; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 26px; opacity: 0.75; }
+    .footer-note { text-align: right; color: #374151; font-family: Arial, sans-serif; font-size: 11px; line-height: 1.4; }
+    .no-print { margin-top: 20px; text-align: center; }
+    .print-button { padding: 10px 24px; border: 0; border-radius: 6px; background: #174f80; color: #fff; cursor: pointer; font-family: Arial, sans-serif; }
+    @media print {
+      body { background: #fff; }
+      .page { padding: 0; max-width: none; }
+      .no-print { display: none; }
+      .document { min-height: calc(100vh - 2px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="document">
+      <div class="header">
+        <div class="brand">
+          ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="${companyName} logo">` : `<div class="logo-fallback">${companyName}</div>`}
+        </div>
+        <div class="company-info">
+          <strong>${companyName}</strong><br>
+          ${companyTin ? `TIN: ${companyTin}<br>` : ""}
+          ${companyAddress ? `${companyAddress}<br>` : ""}
+          ${companyPhone ? `Phone: ${companyPhone}<br>` : ""}
+          ${companyEmail ? `Email: ${companyEmail}<br>` : ""}
+          ${companyWebsite ? `Website: ${companyWebsite}<br>` : ""}
+          ${site?.name ? `Site: ${escapeHtml(site.name)}${site?.location ? `, ${escapeHtml(site.location)}` : ""}` : ""}
+        </div>
+      </div>
+
+      <div class="title-band">DISCOUNTED QUOTATION</div>
+
+      <div class="bill-row">
+        <div class="bill-to">
+          <div class="bill-label">BILL TO:</div>
+          <div class="client-box">
+            <strong>${escapeHtml(client.name || "-")}</strong>
+            ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
+            ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
+            ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
+            ${client.address ? `<br>${escapeHtml(client.address)}` : ""}
+          </div>
+        </div>
+        <div class="meta">
+          <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
+          <div class="meta-row"><div class="meta-label">Quote No:</div><div><strong>${escapeHtml(qt.qtNumber)}</strong></div></div>
+          ${qt.validUntil ? `<div class="meta-row"><div class="meta-label">Valid Until:</div><div>${new Date(qt.validUntil).toLocaleDateString()}</div></div>` : ""}
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th class="col-no">SINO</th>
+            <th class="col-desc">DESCRIPTION</th>
+            <th class="col-unit">UNIT</th>
+            <th class="col-qty">Qty</th>
+            <th class="col-rate">Unit rate<br>(RWF)</th>
+            <th class="col-total">Total Amount<br>(RWF)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${qt.items.map((item, index) => `
+          <tr>
+            <td class="col-no">${index + 1}</td>
+            <td class="description-cell">${escapeHtml(item.description || item.materialName || "-")}</td>
+            <td class="col-unit">${escapeHtml(item.unit || "-")}</td>
+            <td class="col-qty">${formatQty(item.quantityRequested)}</td>
+            <td class="col-rate">${formatRwf(item.unitPrice)}</td>
+            <td class="col-total">${formatRwf(item.totalPrice)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+
+      <div class="terms-total">
+        <div class="terms">
+          Quote validity : ${validityDays} days<br>
+          ${qt.validUntil ? `Valid until : ${new Date(qt.validUntil).toLocaleDateString()}<br>` : ""}
+          ${qt.notes ? `${escapeHtml(qt.notes)}<br>` : ""}
+          ${qt.terms ? escapeHtml(qt.terms) : "Otherwise terms and conditions apply"}
+        </div>
+        <div class="totals">
+          <table>
+            <tr><td>${subtotalLabel}</td><td>${formatRwf(qt.subTotal)}</td></tr>
+            <tr><td>VAT (${formatQty(taxRate).replace(".00", "")}%)</td><td>${formatRwf(qt.taxAmount)}</td></tr>
+            <tr><td>Total Amount VAT</td><td>${formatRwf(qt.totalAmount)}</td></tr>
+          </table>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div>
+          <div class="signature-name">${escapeHtml(qt.createdBy?.name || "Authorized Person")}</div>
+          <div class="signature-title">For ${companyName}</div>
+          ${company.industry ? `<div class="signature-title">${escapeHtml(company.industry)}</div>` : ""}
+        </div>
+        <div class="stamp"><div class="stamp-mark">${escapeHtml((company.name || "LS").slice(0, 3).toUpperCase())}</div></div>
+        <div class="footer-note">
+          ${company.description ? `${escapeHtml(company.description)}<br>` : ""}
+          ${companyEmail ? `${companyEmail}<br>` : ""}
+          ${companyPhone ? companyPhone : ""}
+        </div>
+      </div>
+    </div>
+
+    <div class="no-print">
+      <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
+    </div>
+  </div>
+</body>
+</html>`;
+}
 function buildQuotationPdf(qt) {
     const pageWidth = 595;
     const pageHeight = 842;
@@ -118,16 +321,18 @@ function buildQuotationPdf(qt) {
     addText(qt.qtNumber, margin, 13, true);
     addText(`Status: ${qt.status.toUpperCase()}`, margin, 10);
     addGap();
-    addText("Supplier", margin, 12, true);
-    addText(qt.supplier.name);
-    if (qt.supplier.contactPerson)
-        addText(`Contact: ${qt.supplier.contactPerson}`);
-    if (qt.supplier.email)
-        addText(`Email: ${qt.supplier.email}`);
-    if (qt.supplier.phone)
-        addText(`Phone: ${qt.supplier.phone}`);
-    if (qt.supplier.address)
-        addText(`Address: ${qt.supplier.address}`);
+    const client = (qt.client || {});
+    addText("Client", margin, 12, true);
+    if (client.name)
+        addText(client.name);
+    if (client.contactPerson)
+        addText(`Contact: ${client.contactPerson}`);
+    if (client.email)
+        addText(`Email: ${client.email}`);
+    if (client.phone)
+        addText(`Phone: ${client.phone}`);
+    if (client.address)
+        addText(`Address: ${client.address}`);
     addGap();
     const site = qt.site_id;
     addText("Details", margin, 12, true);
@@ -202,7 +407,7 @@ function buildQuotationPdf(qt) {
 router.get("/", auth_1.authenticateToken, async (req, res) => {
     try {
         const company_id = req.user.company_id;
-        const { status, siteId, supplier, startDate, endDate, page = "1", limit = "20", } = req.query;
+        const { status, siteId, supplier, client, clientId, startDate, endDate, page = "1", limit = "20", } = req.query;
         const where = { company_id };
         if (req.user.role === types_1.UserRole.SITE_MANAGER) {
             if (!req.assignedSiteIds?.length) {
@@ -221,6 +426,10 @@ router.get("/", auth_1.authenticateToken, async (req, res) => {
             where.site_id = new mongoose_1.default.Types.ObjectId(siteId);
         if (supplier)
             where["supplier.name"] = { $regex: supplier, $options: "i" };
+        if (clientId && mongoose_1.default.Types.ObjectId.isValid(clientId))
+            where.client_id = new mongoose_1.default.Types.ObjectId(clientId);
+        if (client)
+            where["client.name"] = { $regex: client, $options: "i" };
         if (startDate || endDate) {
             where.createdAt = {};
             if (startDate)
@@ -285,12 +494,15 @@ router.get("/:id/pdf", auth_1.authenticateToken, async (req, res) => {
             res.status(404).json({ error: "Quotation not found" });
             return;
         }
-        const pdf = buildQuotationPdf(qt);
-        const filename = `${qt.qtNumber}.pdf`;
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename="${filename}"`);
-        res.setHeader("Content-Length", pdf.length.toString());
-        res.send(pdf);
+        const company = (await models_1.Company.findOne({ company_id: req.user.company_id }).lean()) ||
+            (mongoose_1.default.Types.ObjectId.isValid(req.user.company_id)
+                ? await models_1.Company.findById(req.user.company_id).lean()
+                : null) ||
+            (await models_1.Company.findOne({ name: "Lilstock" }).lean()) ||
+            {};
+        const html = buildQuotationHtml(qt, company);
+        res.setHeader("Content-Type", "text/html");
+        res.send(html);
     }
     catch (err) {
         console.error("Generate quotation PDF error:", err);
@@ -301,9 +513,21 @@ router.get("/:id/pdf", auth_1.authenticateToken, async (req, res) => {
 router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
         const company_id = req.user.company_id;
-        const { supplier, site_id, items, taxRate = 0, validUntil, notes, terms, } = req.body;
-        if (!supplier?.name || !items?.length) {
-            res.status(400).json({ error: "Supplier name and items are required" });
+        const { client_id, supplier, site_id, items, taxRate = 0, validUntil, notes, terms, } = req.body;
+        if (!client_id || !items?.length) {
+            res.status(400).json({ error: "Client and items are required" });
+            return;
+        }
+        if (!mongoose_1.default.Types.ObjectId.isValid(client_id)) {
+            res.status(400).json({ error: "Invalid client ID" });
+            return;
+        }
+        const client = await models_1.Client.findOne({
+            _id: new mongoose_1.default.Types.ObjectId(client_id),
+            company_id,
+        }).lean();
+        if (!client) {
+            res.status(404).json({ error: "Client not found" });
             return;
         }
         if (site_id) {
@@ -334,7 +558,15 @@ router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async
         const qtNumber = await generateQTNumber(company_id);
         const qt = (await models_1.Quotation.create({
             qtNumber,
-            supplier,
+            client_id: new mongoose_1.default.Types.ObjectId(client_id),
+            client: {
+                name: client.name,
+                contactPerson: client.contactPerson || "",
+                email: client.email || "",
+                phone: client.phone || "",
+                address: client.address || "",
+            },
+            supplier: supplier || {},
             site_id: site_id ? new mongoose_1.default.Types.ObjectId(site_id) : undefined,
             status: "draft",
             items: processedItems,
@@ -345,10 +577,12 @@ router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async
             createdBy: new mongoose_1.default.Types.ObjectId(req.user.id),
             company_id,
         }));
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.QUOTATION, `Created quotation ${qtNumber} for ${supplier.name}`, { resourceId: qt._id.toString(), resourceName: qtNumber });
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.QUOTATION, `Created quotation ${qtNumber} for ${client.name}`, { resourceId: qt._id.toString(), resourceName: qtNumber });
         res.status(201).json({
             id: qt._id.toString(),
             qtNumber: qt.qtNumber,
+            client_id: qt.client_id?.toString(),
+            client: qt.client,
             supplier: qt.supplier,
             status: qt.status,
             totalAmount: qt.totalAmount,
@@ -403,7 +637,9 @@ router.put("/:id", auth_1.authenticateToken, auth_1.requireMainStockManager, asy
             notes: i.notes || "",
         }));
         const totals = calculateTotals(processedItems, taxRate);
-        qt.supplier = supplier;
+        if (supplier) {
+            qt.supplier = supplier;
+        }
         qt.site_id = site_id ? new mongoose_1.default.Types.ObjectId(site_id) : undefined;
         qt.items = processedItems;
         qt.subTotal = totals.subTotal;
@@ -421,6 +657,9 @@ router.put("/:id", auth_1.authenticateToken, auth_1.requireMainStockManager, asy
         res.json({
             id: qt._id.toString(),
             qtNumber: qt.qtNumber,
+            client_id: qt.client_id?.toString(),
+            client: qt.client,
+            supplier: qt.supplier,
             message: "Quotation updated successfully",
         });
     }
@@ -518,7 +757,7 @@ router.patch("/:id/send", auth_1.authenticateToken, auth_1.requireMainStockManag
         qt.status = "sent";
         qt.sentDate = new Date();
         await qt.save();
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.QUOTATION, `Sent quotation ${qt.qtNumber} to ${qt.supplier.name}`, {
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.QUOTATION, `Sent quotation ${qt.qtNumber} to ${qt.client?.name || qt.supplier?.name || "recipient"}`, {
             resourceId: qt._id.toString(),
             resourceName: qt.qtNumber,
         });
@@ -603,7 +842,7 @@ router.patch("/:id/reject", auth_1.authenticateToken, auth_1.requireMainStockMan
         res.status(500).json({ error: "Failed to reject quotation" });
     }
 });
-// ── POST /:id/convert — Convert accepted quotation to PO ──────────────────────
+// Convert accepted quotation to invoice
 router.post("/:id/convert", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
         const id = String(req.params.id);
@@ -618,70 +857,69 @@ router.post("/:id/convert", auth_1.authenticateToken, auth_1.requireMainStockMan
         }
         if (qt.status !== "accepted") {
             res.status(400).json({
-                error: "Only accepted quotations can be converted to a purchase order",
+                error: "Only accepted quotations can be converted to an invoice",
             });
             return;
         }
-        if (qt.convertedToPO) {
+        if (qt.convertedToInvoice) {
             res.status(400).json({
-                error: "This quotation has already been converted to a purchase order",
+                error: "This quotation has already been converted to an invoice",
             });
             return;
         }
-        if (!qt.site_id) {
-            res.status(400).json({
-                error: "Quotation must have a site assigned before converting to purchase order. Please edit the quotation and add a site.",
-            });
-            return;
-        }
-        const site = await models_1.Site.findOne({ _id: qt.site_id, company_id });
-        if (!site) {
-            res.status(404).json({ error: "Site not found" });
-            return;
-        }
-        const poNumber = await generatePONumber(company_id);
-        const poItems = qt.items.map((item) => ({
+        const invoiceNumber = await generateInvoiceNumber(company_id);
+        const dueDate = qt.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const invoiceItems = qt.items.map((item) => ({
             materialName: item.materialName,
             material_id: item.material_id || null,
             description: item.description || "",
-            quantityOrdered: item.quantityRequested,
-            quantityReceived: 0,
+            quantity: item.quantityRequested,
             unitPrice: item.unitPrice,
             totalPrice: item.totalPrice,
             unit: item.unit,
             notes: item.notes || "",
         }));
-        const po = (await models_1.PurchaseOrder.create({
-            poNumber,
-            supplier: qt.supplier,
-            site_id: qt.site_id,
+        const invoice = (await models_1.Invoice.create({
+            invoiceNumber,
+            quotation_id: qt._id,
+            qtNumber: qt.qtNumber,
+            client_id: qt.client_id || undefined,
+            client: {
+                name: qt.client?.name || qt.supplier?.name || "Client",
+                contactPerson: qt.client?.contactPerson || qt.supplier?.contactPerson || "",
+                email: qt.client?.email || qt.supplier?.email || "",
+                phone: qt.client?.phone || qt.supplier?.phone || "",
+                address: qt.client?.address || qt.supplier?.address || "",
+            },
+            site_id: qt.site_id || undefined,
             status: "draft",
-            items: poItems,
+            items: invoiceItems,
             subTotal: qt.subTotal,
             taxRate: qt.taxRate,
             taxAmount: qt.taxAmount,
             totalAmount: qt.totalAmount,
+            amountPaid: 0,
+            balanceDue: qt.totalAmount,
+            issueDate: new Date(),
+            dueDate,
             notes: qt.notes,
             terms: qt.terms,
-            expectedDeliveryDate: qt.validUntil || undefined,
             createdBy: new mongoose_1.default.Types.ObjectId(req.user.id),
             company_id,
         }));
-        qt.convertedToPO = po._id;
+        qt.convertedToInvoice = invoice._id;
         await qt.save();
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.PURCHASE_ORDER, `Converted quotation ${qt.qtNumber} to purchase order ${poNumber}`, { resourceId: po._id.toString(), resourceName: poNumber });
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.INVOICE, `Converted quotation ${qt.qtNumber} to invoice ${invoiceNumber}`, { resourceId: invoice._id.toString(), resourceName: invoiceNumber });
         res.status(201).json({
             id: qt._id.toString(),
             qtNumber: qt.qtNumber,
-            convertedToPO: { id: po._id.toString(), poNumber },
-            message: `Quotation converted to purchase order ${poNumber}`,
+            convertedToInvoice: { id: invoice._id.toString(), invoiceNumber },
+            message: `Quotation converted to invoice ${invoiceNumber}`,
         });
     }
     catch (err) {
         console.error("Convert quotation error:", err);
-        res
-            .status(500)
-            .json({ error: "Failed to convert quotation to purchase order" });
+        res.status(500).json({ error: "Failed to convert quotation to invoice" });
     }
 });
 exports.default = router;

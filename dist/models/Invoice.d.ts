@@ -24,59 +24,57 @@
 /// <reference types="mongoose/types/inferschematype" />
 /// <reference types="mongoose/types/inferhydrateddoctype" />
 /// <reference types="mongoose/types/inferrawdoctype" />
-import mongoose, { Document } from 'mongoose';
-export interface IQuotationItem {
+import mongoose, { Document } from "mongoose";
+export interface IInvoiceItem {
     _id?: mongoose.Types.ObjectId;
     materialName: string;
     material_id?: mongoose.Types.ObjectId;
     description?: string;
-    quantityRequested: number;
+    quantity: number;
     unitPrice: number;
     totalPrice: number;
     unit: string;
     notes?: string;
 }
-export interface IQuotation extends Document {
-    qtNumber: string;
+export interface IInvoice extends Document {
+    invoiceNumber: string;
+    quotation_id?: mongoose.Types.ObjectId;
+    qtNumber?: string;
     client_id?: mongoose.Types.ObjectId;
-    client?: {
+    client: {
         name: string;
         contactPerson?: string;
         email?: string;
         phone?: string;
         address?: string;
-    };
-    supplier?: {
-        name?: string;
-        contactPerson?: string;
-        email?: string;
-        phone?: string;
-        address?: string;
+        taxId?: string;
     };
     site_id?: mongoose.Types.ObjectId;
-    status: 'draft' | 'sent' | 'accepted' | 'rejected' | 'expired';
-    items: IQuotationItem[];
+    status: "draft" | "sent" | "paid" | "overdue" | "cancelled";
+    items: IInvoiceItem[];
     subTotal: number;
     taxRate: number;
     taxAmount: number;
     totalAmount: number;
-    validUntil?: Date;
+    amountPaid: number;
+    balanceDue: number;
+    issueDate: Date;
+    dueDate?: Date;
     notes?: string;
     terms?: string;
     sentDate?: Date;
-    convertedToPO?: mongoose.Types.ObjectId;
-    convertedToInvoice?: mongoose.Types.ObjectId;
+    paidDate?: Date;
     createdBy: mongoose.Types.ObjectId;
     company_id: string;
     createdAt: Date;
     updatedAt: Date;
 }
-export declare const Quotation: mongoose.Model<IQuotation, {}, {}, {}, mongoose.Document<unknown, {}, IQuotation, {}, mongoose.DefaultSchemaOptions> & IQuotation & Required<{
+export declare const Invoice: mongoose.Model<IInvoice, {}, {}, {}, mongoose.Document<unknown, {}, IInvoice, {}, mongoose.DefaultSchemaOptions> & IInvoice & Required<{
     _id: mongoose.Types.ObjectId;
 }> & {
     __v: number;
 } & {
     id: string;
-}, any, IQuotation>;
-export default Quotation;
-//# sourceMappingURL=Quotation.d.ts.map
+}, any, IInvoice>;
+export default Invoice;
+//# sourceMappingURL=Invoice.d.ts.map

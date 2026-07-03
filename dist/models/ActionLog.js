@@ -52,6 +52,7 @@ var ResourceType;
     ResourceType["COMPANY"] = "company";
     ResourceType["PURCHASE_ORDER"] = "purchase_order";
     ResourceType["QUOTATION"] = "quotation";
+    ResourceType["INVOICE"] = "invoice";
     ResourceType["CLIENT"] = "client";
 })(ResourceType || (exports.ResourceType = ResourceType = {}));
 const ActionLogSchema = new mongoose_1.Schema({

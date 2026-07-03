@@ -50,6 +50,7 @@ export declare enum ResourceType {
     COMPANY = "company",
     PURCHASE_ORDER = "purchase_order",
     QUOTATION = "quotation",
+    INVOICE = "invoice",
     CLIENT = "client"
 }
 export interface IActionLog {

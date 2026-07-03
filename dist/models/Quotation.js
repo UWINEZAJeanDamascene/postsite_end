@@ -37,8 +37,16 @@ const QuotationItemSchema = new mongoose_1.Schema({
 });
 const QuotationSchema = new mongoose_1.Schema({
     qtNumber: { type: String, required: true, unique: true },
+    client_id: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Client', default: null },
+    client: {
+        name: { type: String, default: '' },
+        contactPerson: { type: String, default: '' },
+        email: { type: String, default: '' },
+        phone: { type: String, default: '' },
+        address: { type: String, default: '' },
+    },
     supplier: {
-        name: { type: String, required: true },
+        name: { type: String, default: '' },
         contactPerson: { type: String, default: '' },
         email: { type: String, default: '' },
         phone: { type: String, default: '' },
@@ -60,11 +68,13 @@ const QuotationSchema = new mongoose_1.Schema({
     terms: { type: String, default: '' },
     sentDate: { type: Date, default: null },
     convertedToPO: { type: mongoose_1.Schema.Types.ObjectId, ref: 'PurchaseOrder', default: null },
+    convertedToInvoice: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Invoice', default: null },
     createdBy: { type: mongoose_1.Schema.Types.ObjectId, ref: 'User', required: true },
     company_id: { type: String, required: true, index: true },
 }, { timestamps: true });
 QuotationSchema.index({ company_id: 1, status: 1 });
 QuotationSchema.index({ company_id: 1, site_id: 1 });
+QuotationSchema.index({ company_id: 1, client_id: 1 });
 QuotationSchema.index({ qtNumber: 1 });
 exports.Quotation = mongoose_1.default.model('Quotation', QuotationSchema);
 exports.default = exports.Quotation;
