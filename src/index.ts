@@ -160,23 +160,37 @@ app.get("/debug/request-info", (req, res) => {
 
 // API routes
 app.use("/auth", authRoutes);
+app.use("/api/auth", authRoutes);
 app.use("/sites", sitesRoutes);
+app.use("/api/sites", sitesRoutes);
 app.use("/site-records", siteRecordsRoutes);
+app.use("/api/site-records", siteRecordsRoutes);
 app.use("/main-stock", mainStockRoutes);
+app.use("/api/main-stock", mainStockRoutes);
 app.use("/views", viewsRoutes);
+app.use("/api/views", viewsRoutes);
 app.use("/materials", materialsRoutes);
+app.use("/api/materials", materialsRoutes);
 app.use("/action-logs", actionLogsRoutes);
+app.use("/api/action-logs", actionLogsRoutes);
 app.use("/notifications", notificationsRoutes);
+app.use("/api/notifications", notificationsRoutes);
 app.use("/companies", companiesRoutes);
+app.use("/api/companies", companiesRoutes);
 app.use("/purchase-orders", purchaseOrderRoutes);
+app.use("/api/purchase-orders", purchaseOrderRoutes);
 app.use("/suppliers", supplierRoutes);
+app.use("/api/suppliers", supplierRoutes);
 app.use("/delivery-notes", deliveryNoteRoutes);
+app.use("/api/delivery-notes", deliveryNoteRoutes);
 app.use("/purchase-returns", purchaseReturnRoutes);
+app.use("/api/purchase-returns", purchaseReturnRoutes);
 app.use("/quotations", quotationRoutes);
 app.use("/api/quotations", quotationRoutes);
 app.use("/invoices", invoiceRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/clients", clientRoutes);
+app.use("/api/clients", clientRoutes);
 console.log("Routes registered successfully");
 
 // Error handling middleware
