@@ -137,7 +137,7 @@ function formatLongDate(value?: Date): string {
   });
 }
 
-function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
+function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: string; signatureImage?: string; stampImage?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
   const client = (qt.client || {}) as {
     name?: string;
     contactPerson?: string;
@@ -153,6 +153,8 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
   const companyWebsite = escapeHtml(company.website || "");
   const companyTin = escapeHtml(company.taxId || "");
   const logoSrc = typeof company.logo === "string" && company.logo.startsWith("data:image/") ? company.logo : "";
+  const signatureSrc = typeof company.signatureImage === "string" && company.signatureImage.startsWith("data:image/") ? company.signatureImage : "";
+  const stampSrc = typeof company.stampImage === "string" && company.stampImage.startsWith("data:image/") ? company.stampImage : "";
   const taxRate = Number(qt.taxRate || 0);
   const subtotalLabel = taxRate > 0 ? "Total Amount Vat Exclusive" : "Subtotal";
   const validityDays = qt.validUntil
@@ -178,12 +180,12 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
     .company-info strong { font-size: 16px; }
     .title-band { background: #174f80; color: #fff; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; font-size: 15px; }
     .bill-row { display: grid; grid-template-columns: 57% 43%; border-bottom: 1.5px solid #111; min-height: 70px; }
-    .bill-to { border-right: 1.5px solid #111; display: grid; grid-template-columns: 120px 1fr; }
+    .bill-to { border-right: 1.5px solid #111; display: grid; grid-template-columns: auto 1fr; align-items: center; }
     .bill-label { padding: 6px 12px; font-weight: 700; text-align: center; }
-    .client-box { padding: 12px 10px 8px; text-align: center; font-size: 14px; }
+    .client-box { padding: 12px 8px 8px; text-align: left; font-size: 14px; line-height: 1.45; }
     .meta { padding: 10px 18px; font-size: 14px; }
-    .meta-row { display: grid; grid-template-columns: 95px 1fr; gap: 10px; margin-bottom: 8px; }
-    .meta-label { font-weight: 700; font-style: italic; text-align: right; }
+    .meta-row { display: grid; grid-template-columns: 90px 1fr; gap: 12px; margin-bottom: 8px; align-items: center; }
+    .meta-label { font-weight: 700; font-style: normal; text-align: right; letter-spacing: 0.01em; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
     th, td { border-right: 1.5px solid #111; border-bottom: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
     th:last-child, td:last-child { border-right: 0; }
@@ -199,11 +201,17 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
     .terms { padding: 5px 4px; min-height: 58px; font-size: 13px; line-height: 1.45; }
     .totals table td { border-bottom: 1.5px solid #174f80; border-right: 1.5px solid #174f80; padding: 4px 8px; font-weight: 700; }
     .totals table td:last-child { border-right: 0; text-align: right; }
-    .footer { min-height: 140px; display: grid; grid-template-columns: 45% 25% 30%; align-items: center; padding: 16px 72px; gap: 18px; }
-    .signature-name { font-weight: 700; font-size: 14px; line-height: 1.3; }
-    .signature-title { font-weight: 700; font-size: 14px; line-height: 1.3; margin-top: 4px; }
+    .footer { min-height: 180px; display: grid; grid-template-columns: 42% 28% 30%; align-items: center; padding: 16px 72px; gap: 18px; }
+    .signature-block { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+    .signature-image { width: 100%; max-width: 220px; height: auto; object-fit: contain; border-bottom: 1px solid #111; padding-bottom: 8px; }
+    .signature-placeholder { width: 100%; max-width: 240px; height: 72px; border-bottom: 1px dashed #374151; display: flex; align-items: flex-end; justify-content: flex-start; padding-bottom: 6px; color: #374151; font-style: italic; }
+    .signature-label { font-weight: 700; font-size: 12px; color: #1f2937; }
     .stamp { text-align: center; color: #174f80; font-family: Arial, sans-serif; font-weight: 800; }
-    .stamp-mark { width: 98px; height: 98px; border: 3px solid #174f80; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 26px; opacity: 0.75; }
+    .stamp-mark { position: relative; width: 118px; height: 118px; border: 3px solid #174f80; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; opacity: 0.95; }
+    .stamp-mark::before { content: ""; position: absolute; width: 84px; height: 84px; border: 2px solid #174f80; border-radius: 50%; }
+    .stamp-mark::after { content: ""; position: absolute; width: 54px; height: 54px; border: 1.75px solid #174f80; border-radius: 50%; }
+    .stamp-text { position: relative; font-size: 26px; letter-spacing: 0.18em; }
+    .stamp-image { width: 118px; height: 118px; object-fit: contain; border-radius: 50%; }
     .footer-note { text-align: right; color: #374151; font-family: Arial, sans-serif; font-size: 11px; line-height: 1.4; }
     .no-print { margin-top: 20px; text-align: center; }
     .print-button { padding: 10px 24px; border: 0; border-radius: 6px; background: #174f80; color: #fff; cursor: pointer; font-family: Arial, sans-serif; }
@@ -240,15 +248,15 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
           <div class="bill-label">BILL TO:</div>
           <div class="client-box">
             <strong>${escapeHtml(client.name || "-")}</strong>
-            ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
-            ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
-            ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
             ${client.address ? `<br>${escapeHtml(client.address)}` : ""}
+            ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
+            ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
+            ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
           </div>
         </div>
         <div class="meta">
-          <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
           <div class="meta-row"><div class="meta-label">Quote No:</div><div><strong>${escapeHtml(qt.qtNumber)}</strong></div></div>
+          <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
           ${qt.validUntil ? `<div class="meta-row"><div class="meta-label">Valid Until:</div><div>${new Date(qt.validUntil).toLocaleDateString()}</div></div>` : ""}
         </div>
       </div>
@@ -294,12 +302,14 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
       </div>
 
       <div class="footer">
-        <div>
-          <div class="signature-name">${escapeHtml((qt.createdBy as any)?.name || "Authorized Person")}</div>
-          <div class="signature-title">For ${companyName}</div>
+        <div class="signature-block">
+          ${signatureSrc ? `<img class="signature-image" src="${signatureSrc}" alt="Authorized signature">` : `<div class="signature-placeholder">Authorized Signature</div>`}
+          <div class="signature-label">CTS CEO</div>
           ${company.industry ? `<div class="signature-title">${escapeHtml(company.industry)}</div>` : ""}
         </div>
-        <div class="stamp"><div class="stamp-mark">${escapeHtml((company.name || "LS").slice(0, 3).toUpperCase())}</div></div>
+        <div class="stamp">
+          ${stampSrc ? `<img class="stamp-image" src="${stampSrc}" alt="${escapeHtml(companyName)} seal">` : `<div class="stamp-mark"><div class="stamp-text">TCS</div></div>`}
+        </div>
         <div class="footer-note">
           ${company.description ? `${escapeHtml(company.description)}<br>` : ""}
           ${companyEmail ? `${companyEmail}<br>` : ""}

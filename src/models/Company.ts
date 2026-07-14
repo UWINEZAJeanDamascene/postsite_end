@@ -4,6 +4,8 @@ export interface ICompany extends Document {
   name: string;
   company_id?: string | null;
   logo?: string; // base64 image
+  signatureImage?: string; // base64 image for signature
+  stampImage?: string; // base64 image for footer stamp
   address?: string;
   phone?: string;
   email?: string;
@@ -28,6 +30,14 @@ const CompanySchema: Schema = new Schema(
       index: true,
     },
     logo: {
+      type: String,
+      default: null,
+    },
+    signatureImage: {
+      type: String,
+      default: null,
+    },
+    stampImage: {
       type: String,
       default: null,
     },

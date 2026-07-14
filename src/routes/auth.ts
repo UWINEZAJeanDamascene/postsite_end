@@ -76,6 +76,8 @@ async function buildLoginResponse(
             id: company._id.toString(),
             name: company.name,
             logo: company.logo,
+            signatureImage: company.signatureImage,
+            stampImage: company.stampImage,
             address: company.address,
             phone: company.phone,
             email: company.email,
@@ -335,18 +337,22 @@ router.get('/me', authenticateToken, async (req, res): Promise<void> => {
       bio: user.bio,
       location: user.location,
       // Company data
-      company: company ? {
-        id: company._id.toString(),
-        name: company.name,
-        logo: company.logo,
-        address: company.address,
-        phone: company.phone,
-        email: company.email,
-        website: company.website,
-        taxId: company.taxId,
-        industry: company.industry,
-        description: company.description,
-      } : null,
+      company: company
+        ? {
+            id: company._id.toString(),
+            name: company.name,
+            logo: company.logo,
+            signatureImage: company.signatureImage,
+            stampImage: company.stampImage,
+            address: company.address,
+            phone: company.phone,
+            email: company.email,
+            website: company.website,
+            taxId: company.taxId,
+            industry: company.industry,
+            description: company.description,
+          }
+        : null,
     });
   } catch (error) {
     console.error('Get user error:', error);
