@@ -196,6 +196,50 @@ router.post(
   }
 );
 
+// Delete company logo
+router.delete(
+  '/:id/logo',
+  authenticateToken,
+  requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const idStr = Array.isArray(id) ? id[0] : id;
+      let company;
+
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        company = await Company.findById(idStr);
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      } else {
+        company = await Company.findOne({ company_id: idStr }) || await Company.findOne({ name: 'Lilstock' });
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      }
+
+      company.logo = undefined;
+      await company.save();
+
+      await ActionLogService.logFromRequest(
+        req,
+        ActionType.UPDATE,
+        ResourceType.COMPANY,
+        `Company logo deleted: ${company.name}`,
+        { resourceId: company._id.toString(), resourceName: company.name }
+      );
+
+      res.json({ logo: null });
+    } catch (error) {
+      console.error('Delete logo error:', error);
+      res.status(500).json({ error: 'Failed to delete logo' });
+    }
+  }
+);
+
 // Upload company signature image
 router.post(
   '/:id/signature',
@@ -256,6 +300,50 @@ router.post(
   }
 );
 
+// Delete company signature image
+router.delete(
+  '/:id/signature',
+  authenticateToken,
+  requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const idStr = Array.isArray(id) ? id[0] : id;
+      let company;
+
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        company = await Company.findById(idStr);
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      } else {
+        company = await Company.findOne({ company_id: idStr }) || await Company.findOne({ name: 'Lilstock' });
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      }
+
+      company.signatureImage = undefined;
+      await company.save();
+
+      await ActionLogService.logFromRequest(
+        req,
+        ActionType.UPDATE,
+        ResourceType.COMPANY,
+        `Company signature deleted: ${company.name}`,
+        { resourceId: company._id.toString(), resourceName: company.name }
+      );
+
+      res.json({ signatureImage: null });
+    } catch (error) {
+      console.error('Delete signature error:', error);
+      res.status(500).json({ error: 'Failed to delete signature image' });
+    }
+  }
+);
+
 // Upload company stamp image
 router.post(
   '/:id/stamp',
@@ -312,6 +400,50 @@ router.post(
     } catch (error) {
       console.error('Upload stamp error:', error);
       res.status(500).json({ error: 'Failed to upload stamp image' });
+    }
+  }
+);
+
+// Delete company stamp image
+router.delete(
+  '/:id/stamp',
+  authenticateToken,
+  requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const idStr = Array.isArray(id) ? id[0] : id;
+      let company;
+
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        company = await Company.findById(idStr);
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      } else {
+        company = await Company.findOne({ company_id: idStr }) || await Company.findOne({ name: 'Lilstock' });
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      }
+
+      company.stampImage = undefined;
+      await company.save();
+
+      await ActionLogService.logFromRequest(
+        req,
+        ActionType.UPDATE,
+        ResourceType.COMPANY,
+        `Company stamp deleted: ${company.name}`,
+        { resourceId: company._id.toString(), resourceName: company.name }
+      );
+
+      res.json({ stampImage: null });
+    } catch (error) {
+      console.error('Delete stamp error:', error);
+      res.status(500).json({ error: 'Failed to delete stamp image' });
     }
   }
 );

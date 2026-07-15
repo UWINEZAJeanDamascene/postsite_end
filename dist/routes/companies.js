@@ -174,6 +174,36 @@ router.post('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([User
         res.status(500).json({ error: 'Failed to upload logo' });
     }
 });
+// Delete company logo
+router.delete('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const idStr = Array.isArray(id) ? id[0] : id;
+        let company;
+        if (mongoose_1.default.Types.ObjectId.isValid(idStr)) {
+            company = await Company_1.Company.findById(idStr);
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        else {
+            company = await Company_1.Company.findOne({ company_id: idStr }) || await Company_1.Company.findOne({ name: 'Lilstock' });
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        company.logo = undefined;
+        await company.save();
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company logo deleted: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
+        res.json({ logo: null });
+    }
+    catch (error) {
+        console.error('Delete logo error:', error);
+        res.status(500).json({ error: 'Failed to delete logo' });
+    }
+});
 // Upload company signature image
 router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
     try {
@@ -218,6 +248,36 @@ router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)(
         res.status(500).json({ error: 'Failed to upload signature image' });
     }
 });
+// Delete company signature image
+router.delete('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const idStr = Array.isArray(id) ? id[0] : id;
+        let company;
+        if (mongoose_1.default.Types.ObjectId.isValid(idStr)) {
+            company = await Company_1.Company.findById(idStr);
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        else {
+            company = await Company_1.Company.findOne({ company_id: idStr }) || await Company_1.Company.findOne({ name: 'Lilstock' });
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        company.signatureImage = undefined;
+        await company.save();
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company signature deleted: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
+        res.json({ signatureImage: null });
+    }
+    catch (error) {
+        console.error('Delete signature error:', error);
+        res.status(500).json({ error: 'Failed to delete signature image' });
+    }
+});
 // Upload company stamp image
 router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
     try {
@@ -260,6 +320,36 @@ router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([Use
     catch (error) {
         console.error('Upload stamp error:', error);
         res.status(500).json({ error: 'Failed to upload stamp image' });
+    }
+});
+// Delete company stamp image
+router.delete('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const idStr = Array.isArray(id) ? id[0] : id;
+        let company;
+        if (mongoose_1.default.Types.ObjectId.isValid(idStr)) {
+            company = await Company_1.Company.findById(idStr);
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        else {
+            company = await Company_1.Company.findOne({ company_id: idStr }) || await Company_1.Company.findOne({ name: 'Lilstock' });
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        company.stampImage = undefined;
+        await company.save();
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company stamp deleted: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
+        res.json({ stampImage: null });
+    }
+    catch (error) {
+        console.error('Delete stamp error:', error);
+        res.status(500).json({ error: 'Failed to delete stamp image' });
     }
 });
 exports.default = router;
