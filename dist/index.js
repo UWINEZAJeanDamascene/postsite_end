@@ -170,23 +170,37 @@ app.get("/debug/request-info", (req, res) => {
 });
 // API routes
 app.use("/auth", auth_1.default);
+app.use("/api/auth", auth_1.default);
 app.use("/sites", sites_1.default);
+app.use("/api/sites", sites_1.default);
 app.use("/site-records", siteRecords_1.default);
+app.use("/api/site-records", siteRecords_1.default);
 app.use("/main-stock", mainStock_1.default);
+app.use("/api/main-stock", mainStock_1.default);
 app.use("/views", views_1.default);
+app.use("/api/views", views_1.default);
 app.use("/materials", materials_1.default);
+app.use("/api/materials", materials_1.default);
 app.use("/action-logs", actionLogs_1.default);
+app.use("/api/action-logs", actionLogs_1.default);
 app.use("/notifications", notifications_1.default);
+app.use("/api/notifications", notifications_1.default);
 app.use("/companies", companies_1.default);
+app.use("/api/companies", companies_1.default);
 app.use("/purchase-orders", purchaseOrders_1.default);
+app.use("/api/purchase-orders", purchaseOrders_1.default);
 app.use("/suppliers", suppliers_1.default);
+app.use("/api/suppliers", suppliers_1.default);
 app.use("/delivery-notes", deliveryNotes_1.default);
+app.use("/api/delivery-notes", deliveryNotes_1.default);
 app.use("/purchase-returns", purchaseReturns_1.default);
+app.use("/api/purchase-returns", purchaseReturns_1.default);
 app.use("/quotations", quotations_1.default);
 app.use("/api/quotations", quotations_1.default);
 app.use("/invoices", invoices_1.default);
 app.use("/api/invoices", invoices_1.default);
 app.use("/clients", clients_1.default);
+app.use("/api/clients", clients_1.default);
 console.log("Routes registered successfully");
 // Error handling middleware
 app.use((err, _req, res, _next) => {

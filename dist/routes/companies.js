@@ -45,7 +45,7 @@ router.get('/:id', auth_1.authenticateToken, async (req, res) => {
 // Update company (main managers only)
 router.patch('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
     try {
-        const { name, address, phone, email, website, taxId, industry, description, logo } = req.body;
+        const { name, address, phone, email, website, taxId, industry, description, logo, signatureImage, stampImage } = req.body;
         const { id } = req.params;
         const idStr = Array.isArray(id) ? id[0] : id;
         let company;
@@ -107,6 +107,10 @@ router.patch('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.U
             company.description = description;
         if (logo !== undefined)
             company.logo = logo;
+        if (signatureImage !== undefined)
+            company.signatureImage = signatureImage;
+        if (stampImage !== undefined)
+            company.stampImage = stampImage;
         await company.save();
         // Log action
         await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company profile updated: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
@@ -168,6 +172,94 @@ router.post('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([User
     catch (error) {
         console.error('Upload logo error:', error);
         res.status(500).json({ error: 'Failed to upload logo' });
+    }
+});
+// Upload company signature image
+router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
+    try {
+        const { image } = req.body;
+        const { id } = req.params;
+        const idStr = Array.isArray(id) ? id[0] : id;
+        if (!image || typeof image !== 'string') {
+            res.status(400).json({ error: 'Image is required' });
+            return;
+        }
+        if (!image.startsWith('data:image/')) {
+            res.status(400).json({ error: 'Invalid image format' });
+            return;
+        }
+        let company;
+        if (mongoose_1.default.Types.ObjectId.isValid(idStr)) {
+            company = await Company_1.Company.findById(idStr);
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        else {
+            company = await Company_1.Company.findOne({ company_id: idStr }) || await Company_1.Company.findOne({ name: 'Lilstock' });
+            if (!company) {
+                company = await Company_1.Company.create({
+                    name: 'Lilstock',
+                    company_id: idStr,
+                    signatureImage: image,
+                });
+                res.json({ signatureImage: image });
+                return;
+            }
+        }
+        company.signatureImage = image;
+        await company.save();
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company signature updated: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
+        res.json({ signatureImage: image });
+    }
+    catch (error) {
+        console.error('Upload signature error:', error);
+        res.status(500).json({ error: 'Failed to upload signature image' });
+    }
+});
+// Upload company stamp image
+router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([User_1.UserRole.MAIN_MANAGER, User_1.UserRole.MANAGER]), async (req, res) => {
+    try {
+        const { image } = req.body;
+        const { id } = req.params;
+        const idStr = Array.isArray(id) ? id[0] : id;
+        if (!image || typeof image !== 'string') {
+            res.status(400).json({ error: 'Image is required' });
+            return;
+        }
+        if (!image.startsWith('data:image/')) {
+            res.status(400).json({ error: 'Invalid image format' });
+            return;
+        }
+        let company;
+        if (mongoose_1.default.Types.ObjectId.isValid(idStr)) {
+            company = await Company_1.Company.findById(idStr);
+            if (!company) {
+                res.status(404).json({ error: 'Company not found' });
+                return;
+            }
+        }
+        else {
+            company = await Company_1.Company.findOne({ company_id: idStr }) || await Company_1.Company.findOne({ name: 'Lilstock' });
+            if (!company) {
+                company = await Company_1.Company.create({
+                    name: 'Lilstock',
+                    company_id: idStr,
+                    stampImage: image,
+                });
+                res.json({ stampImage: image });
+                return;
+            }
+        }
+        company.stampImage = image;
+        await company.save();
+        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.COMPANY, `Company stamp updated: ${company.name}`, { resourceId: company._id.toString(), resourceName: company.name });
+        res.json({ stampImage: image });
+    }
+    catch (error) {
+        console.error('Upload stamp error:', error);
+        res.status(500).json({ error: 'Failed to upload stamp image' });
     }
 });
 exports.default = router;

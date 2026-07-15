@@ -29,6 +29,8 @@ export interface ICompany extends Document {
     name: string;
     company_id?: string | null;
     logo?: string;
+    signatureImage?: string;
+    stampImage?: string;
     address?: string;
     phone?: string;
     email?: string;

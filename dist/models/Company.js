@@ -40,6 +40,14 @@ const CompanySchema = new mongoose_1.Schema({
         type: String,
         default: null,
     },
+    signatureImage: {
+        type: String,
+        default: null,
+    },
+    stampImage: {
+        type: String,
+        default: null,
+    },
     address: {
         type: String,
         default: '',
