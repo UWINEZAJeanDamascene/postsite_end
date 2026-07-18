@@ -48,7 +48,7 @@ router.patch(
   requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
   async (req, res) => {
     try {
-      const { name, address, phone, email, website, taxId, industry, description, logo, signatureImage, stampImage } = req.body;
+      const { name, address, phone, email, website, taxId, industry, description, logo, signatureImage, stampImage, footerImage } = req.body;
       const { id } = req.params;
       const idStr = Array.isArray(id) ? id[0] : id;
 
@@ -81,6 +81,9 @@ router.patch(
             industry: industry || '',
             description: description || '',
             logo: logo || null,
+            signatureImage: signatureImage || null,
+            stampImage: stampImage || null,
+            footerImage: footerImage || null,
           });
           res.json(company);
           return;
@@ -106,6 +109,7 @@ router.patch(
       if (logo !== undefined) company.logo = logo;
       if (signatureImage !== undefined) company.signatureImage = signatureImage;
       if (stampImage !== undefined) company.stampImage = stampImage;
+      if (footerImage !== undefined) company.footerImage = footerImage;
 
       await company.save();
 
@@ -444,6 +448,110 @@ router.delete(
     } catch (error) {
       console.error('Delete stamp error:', error);
       res.status(500).json({ error: 'Failed to delete stamp image' });
+    }
+  }
+);
+
+// Upload company footer image
+router.post(
+  '/:id/footer',
+  authenticateToken,
+  requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
+  async (req, res) => {
+    try {
+      const { image } = req.body;
+      const { id } = req.params;
+      const idStr = Array.isArray(id) ? id[0] : id;
+
+      if (!image || typeof image !== 'string') {
+        res.status(400).json({ error: 'Image is required' });
+        return;
+      }
+
+      if (!image.startsWith('data:image/')) {
+        res.status(400).json({ error: 'Invalid image format' });
+        return;
+      }
+
+      let company;
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        company = await Company.findById(idStr);
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      } else {
+        company = await Company.findOne({ company_id: idStr }) || await Company.findOne({ name: 'Lilstock' });
+        if (!company) {
+          company = await Company.create({
+            name: 'Lilstock',
+            company_id: idStr,
+            footerImage: image,
+          });
+          res.json({ footerImage: image });
+          return;
+        }
+      }
+
+      company.footerImage = image;
+      await company.save();
+
+      await ActionLogService.logFromRequest(
+        req,
+        ActionType.UPDATE,
+        ResourceType.COMPANY,
+        `Company footer image updated: ${company.name}`,
+        { resourceId: company._id.toString(), resourceName: company.name }
+      );
+
+      res.json({ footerImage: image });
+    } catch (error) {
+      console.error('Upload footer image error:', error);
+      res.status(500).json({ error: 'Failed to upload footer image' });
+    }
+  }
+);
+
+// Delete company footer image
+router.delete(
+  '/:id/footer',
+  authenticateToken,
+  requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const idStr = Array.isArray(id) ? id[0] : id;
+      let company;
+
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        company = await Company.findById(idStr);
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      } else {
+        company = await Company.findOne({ company_id: idStr }) || await Company.findOne({ name: 'Lilstock' });
+        if (!company) {
+          res.status(404).json({ error: 'Company not found' });
+          return;
+        }
+      }
+
+      company.footerImage = undefined;
+      await company.save();
+
+      await ActionLogService.logFromRequest(
+        req,
+        ActionType.UPDATE,
+        ResourceType.COMPANY,
+        `Company footer image deleted: ${company.name}`,
+        { resourceId: company._id.toString(), resourceName: company.name }
+      );
+
+      res.json({ footerImage: null });
+    } catch (error) {
+      console.error('Delete footer image error:', error);
+      res.status(500).json({ error: 'Failed to delete footer image' });
     }
   }
 );

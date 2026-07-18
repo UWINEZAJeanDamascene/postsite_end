@@ -135,29 +135,157 @@ function buildQuotationHtml(qt, company) {
     const logoSrc = typeof company.logo === "string" && company.logo.startsWith("data:image/") ? company.logo : "";
     const signatureSrc = typeof company.signatureImage === "string" && company.signatureImage.startsWith("data:image/") ? company.signatureImage : "";
     const stampSrc = typeof company.stampImage === "string" && company.stampImage.startsWith("data:image/") ? company.stampImage : "";
+    const footerSrc = typeof company.footerImage === "string" && company.footerImage.startsWith("data:image/") ? company.footerImage : "";
     const taxRate = Number(qt.taxRate || 0);
     const subtotalLabel = taxRate > 0 ? "Total Amount Vat Exclusive" : "Subtotal";
     const validityDays = qt.validUntil
         ? Math.max(1, Math.ceil((new Date(qt.validUntil).getTime() - new Date(qt.createdAt || new Date()).getTime()) / (1000 * 60 * 60 * 24)))
         : 30;
+    const tableItems = Array.isArray(qt.items) ? qt.items : [];
+    const firstPageRows = 17;
+    const otherPageRows = 12;
+    const footerBannerHtml = footerSrc ? `<img class="footer-banner" src="${footerSrc}" alt="Quotation footer image">` : "";
+    const pages = [];
+    let cursor = 0;
+    let currentPageRows = Math.min(firstPageRows, tableItems.length - cursor);
+    while (cursor < tableItems.length) {
+        pages.push(tableItems.slice(cursor, cursor + currentPageRows));
+        cursor += currentPageRows;
+        currentPageRows = Math.min(otherPageRows, tableItems.length - cursor);
+    }
+    const totalPages = pages.length;
+    const getRowOffset = (pageIndex) => pages.slice(0, pageIndex).reduce((count, page) => count + page.length, 0);
+    const renderTableRows = (items, pageIndex) => items
+        .map((item, index) => {
+        const rowNumber = getRowOffset(pageIndex) + index + 1;
+        return `
+          <tr>
+            <td class="col-no">${rowNumber}</td>
+            <td class="description-cell">${escapeHtml(item.description || item.materialName || "-")}</td>
+            <td class="col-unit">${escapeHtml(item.unit || "-")}</td>
+            <td class="col-qty">${formatQty(item.quantityRequested)}</td>
+            <td class="col-rate">${formatRwf(item.unitPrice)}</td>
+            <td class="col-total">${formatRwf(item.totalPrice)}</td>
+          </tr>`;
+    })
+        .join("");
+    const renderPage = (pageItems, pageIndex) => {
+        const isLastPage = pageIndex === totalPages - 1;
+        return `
+      <div class="page">
+        <div class="document">
+          <div class="header">
+            <div class="brand">
+              ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="${companyName} logo">` : `<div class="logo-fallback">${companyName}</div>`}
+            </div>
+            <div class="company-info">
+              <strong>${companyName}</strong><br>
+              ${companyTin ? `TIN: ${companyTin}<br>` : ""}
+              ${companyAddress ? `${companyAddress}<br>` : ""}
+              ${companyPhone ? `Phone: ${companyPhone}<br>` : ""}
+              ${companyEmail ? `Email: ${companyEmail}<br>` : ""}
+              ${companyWebsite ? `Website: ${companyWebsite}<br>` : ""}
+              ${site?.name ? `Site: ${escapeHtml(site.name)}${site?.location ? `, ${escapeHtml(site.location)}` : ""}` : ""}
+              ${totalPages > 1 ? `<div class="page-number">Page ${pageIndex + 1} of ${totalPages}</div>` : ""}
+            </div>
+          </div>
+
+          <div class="title-band">QUOTATION</div>
+
+          <div class="bill-row">
+            <div class="bill-to">
+              <div class="bill-label">BILL TO:</div>
+              <div class="client-box">
+                <strong>${escapeHtml(client.name || "-")}</strong>
+                ${client.address ? `<br>${escapeHtml(client.address)}` : ""}
+                ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
+                ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
+                ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
+              </div>
+            </div>
+            <div class="meta">
+              <div class="meta-row"><div class="meta-label">Quote No:</div><div><strong>${escapeHtml(qt.qtNumber)}</strong></div></div>
+              <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
+              ${qt.validUntil ? `<div class="meta-row"><div class="meta-label">Valid Until:</div><div>${new Date(qt.validUntil).toLocaleDateString()}</div></div>` : ""}
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th class="col-no">SINO</th>
+                <th class="col-desc">DESCRIPTION</th>
+                <th class="col-unit">UNIT</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-rate">Unit rate<br>(RWF)</th>
+                <th class="col-total">Total Amount<br>(RWF)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${renderTableRows(pageItems, pageIndex)}
+            </tbody>
+          </table>
+
+          ${isLastPage ? `
+            <div class="terms-total">
+              <div class="terms">
+                Quote validity : ${validityDays} days<br>
+                ${qt.validUntil ? `Valid until : ${new Date(qt.validUntil).toLocaleDateString()}<br>` : ""}
+                ${qt.notes ? `${escapeHtml(qt.notes)}<br>` : ""}
+                ${qt.terms ? escapeHtml(qt.terms) : "Otherwise terms and conditions apply"}
+              </div>
+              <div class="totals">
+                <table>
+                  <tr><td>${subtotalLabel}</td><td>${formatRwf(qt.subTotal)}</td></tr>
+                  <tr><td>VAT (${formatQty(taxRate).replace(".00", "")}%)</td><td>${formatRwf(qt.taxAmount)}</td></tr>
+                  <tr><td>Total Amount VAT</td><td>${formatRwf(qt.totalAmount)}</td></tr>
+                </table>
+              </div>
+            </div>
+
+            <div class="footer">
+              <div class="signature-block">
+                ${signatureSrc ? `<img class="signature-image" src="${signatureSrc}" alt="Authorized signature">` : `<div class="signature-placeholder">Authorized Signature</div>`}
+                <div class="signature-label">CTS CEO</div>
+                ${company.industry ? `<div class="signature-title">${escapeHtml(company.industry)}</div>` : ""}
+              </div>
+              <div class="stamp">
+                ${stampSrc ? `<img class="stamp-image" src="${stampSrc}" alt="${escapeHtml(companyName)} seal">` : `<div class="stamp-mark"><div class="stamp-text">TCS</div></div>`}
+              </div>
+              <div class="footer-note">
+                ${company.description ? `${escapeHtml(company.description)}<br>` : ""}
+                ${companyEmail ? `${companyEmail}<br>` : ""}
+                ${companyPhone ? companyPhone : ""}
+              </div>
+            </div>
+          ` : ""}
+
+          ${footerBannerHtml}
+        </div>
+      </div>
+    `;
+    };
     return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>Quotation ${escapeHtml(qt.qtNumber)}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
+    @page { size: A4; margin: 0; }
+    html, body { width: 100%; min-height: 297mm; margin: 0; padding: 0; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f3f4f6; color: #111; font-family: "Times New Roman", Times, serif; }
-    .page { width: 100%; max-width: 980px; margin: 0 auto; padding: 28px; background: #fff; }
-    .document { border: 2px solid #111; min-height: 900px; background: #fff; }
+    body { background: #f3f4f6; color: #111; font-family: "Times New Roman", Times, serif; }
+    .page { width: 100%; max-width: none; margin: 0 auto; padding: 0; page-break-after: always; }
+    .page:last-child { page-break-after: auto; }
+    .document { width: 100%; border: 2px solid #111; background: #fff; position: relative; padding: 8mm 8mm 8mm; box-sizing: border-box; }
     .header { display: grid; grid-template-columns: 42% 58%; min-height: 138px; border-bottom: 1.5px solid #111; }
     .brand { display: flex; align-items: center; padding: 14px 18px 10px; }
     .logo { max-width: 245px; max-height: 105px; object-fit: contain; }
     .logo-fallback { font-family: Arial, sans-serif; font-size: 38px; font-weight: 800; color: #174f80; letter-spacing: 0.02em; }
     .company-info { padding: 16px 18px 10px; text-align: right; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.38; }
     .company-info strong { font-size: 16px; }
-    .title-band { background: #174f80; color: #fff; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; font-size: 15px; }
+    .page-number { margin-top: 12px; font-weight: 600; font-size: 13px; }
+    .title-band { background: #174f80; background-color: #174f80; color: #fff; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 3px 8px; font-size: 15px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .bill-row { display: grid; grid-template-columns: 57% 43%; border-bottom: 1.5px solid #111; min-height: 70px; }
     .bill-to { border-right: 1.5px solid #111; display: grid; grid-template-columns: auto 1fr; align-items: center; }
     .bill-label { padding: 6px 12px; font-weight: 700; text-align: center; }
@@ -165,9 +293,13 @@ function buildQuotationHtml(qt, company) {
     .meta { padding: 10px 18px; font-size: 14px; }
     .meta-row { display: grid; grid-template-columns: 90px 1fr; gap: 12px; margin-bottom: 8px; align-items: center; }
     .meta-label { font-weight: 700; font-style: normal; text-align: right; letter-spacing: 0.01em; }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
-    th, td { border-right: 1.5px solid #111; border-bottom: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
-    th:last-child, td:last-child { border-right: 0; }
+    table { width: 100%; border-collapse: collapse; border-spacing: 0; table-layout: fixed; font-size: 13px; page-break-inside: auto; border: 1.5px solid #111; }
+    thead { display: table-header-group; }
+    tbody { display: table-row-group; }
+    tr { page-break-inside: avoid; page-break-after: auto; }
+    th, td { border: 1.5px solid #111; padding: 5px 5px; vertical-align: top; }
+    th:first-child, td:first-child { border-left: 1.5px solid #111; }
+    th:first-child, th { border-top: 1.5px solid #111; }
     th { font-weight: 700; text-align: center; }
     .col-no { width: 8%; text-align: right; }
     .col-desc { width: 48%; }
@@ -176,13 +308,14 @@ function buildQuotationHtml(qt, company) {
     .col-rate { width: 14%; text-align: right; }
     .col-total { width: 16%; text-align: right; }
     .description-cell { line-height: 1.3; }
-    .terms-total { display: grid; grid-template-columns: 63% 37%; border-bottom: 1.5px solid #111; }
-    .terms { padding: 5px 4px; min-height: 58px; font-size: 13px; line-height: 1.45; }
+    .terms-total { display: grid; grid-template-columns: 63% 37%; border-bottom: 1.5px solid #111; margin-top: 12px; }
+    .terms { padding: 5px 4px; min-height: 40px; font-size: 13px; line-height: 1.45; }
     .totals table td { border-bottom: 1.5px solid #174f80; border-right: 1.5px solid #174f80; padding: 4px 8px; font-weight: 700; }
     .totals table td:last-child { border-right: 0; text-align: right; }
-    .footer { min-height: 180px; display: grid; grid-template-columns: 42% 28% 30%; align-items: center; padding: 16px 72px; gap: 18px; }
+    .footer { display: grid; grid-template-columns: 42% 28% 30%; align-items: start; padding: 8px 16px 0; gap: 8px; }
+    .footer > * { min-height: 0; }
     .signature-block { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-    .signature-image { width: 100%; max-width: 220px; height: auto; object-fit: contain; border-bottom: 1px solid #111; padding-bottom: 8px; }
+    .signature-image { width: 100%; max-width: 180px; max-height: 72px; height: auto; object-fit: contain; border-bottom: 1px solid #111; padding-bottom: 6px; }
     .signature-placeholder { width: 100%; max-width: 240px; height: 72px; border-bottom: 1px dashed #374151; display: flex; align-items: flex-end; justify-content: flex-start; padding-bottom: 6px; color: #374151; font-style: italic; }
     .signature-label { font-weight: 700; font-size: 12px; color: #1f2937; }
     .stamp { text-align: center; color: #174f80; font-family: Arial, sans-serif; font-weight: 800; }
@@ -191,115 +324,23 @@ function buildQuotationHtml(qt, company) {
     .stamp-mark::after { content: ""; position: absolute; width: 54px; height: 54px; border: 1.75px solid #174f80; border-radius: 50%; }
     .stamp-text { position: relative; font-size: 26px; letter-spacing: 0.18em; }
     .stamp-image { width: 118px; height: 118px; object-fit: contain; border-radius: 50%; }
+    .footer-banner { display: block; width: 100%; max-height: 50px; height: auto; object-fit: cover; margin: 8px 0 0; border-radius: 0; page-break-before: auto; break-before: auto; page-break-inside: auto; break-inside: auto; }
     .footer-note { text-align: right; color: #374151; font-family: Arial, sans-serif; font-size: 11px; line-height: 1.4; }
     .no-print { margin-top: 20px; text-align: center; }
     .print-button { padding: 10px 24px; border: 0; border-radius: 6px; background: #174f80; color: #fff; cursor: pointer; font-family: Arial, sans-serif; }
     @media print {
+      html, body { width: 100%; height: 100%; margin: 0; padding: 0; }
       body { background: #fff; }
-      .page { padding: 0; max-width: none; }
+      .page { width: 100%; max-width: none; margin: 0; padding: 0; }
+      .document { width: 100%; border: 2px solid #111; }
       .no-print { display: none; }
-      .document { min-height: calc(100vh - 2px); }
     }
   </style>
 </head>
 <body>
-  <div class="page">
-    <div class="document">
-      <div class="header">
-        <div class="brand">
-          ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="${companyName} logo">` : `<div class="logo-fallback">${companyName}</div>`}
-        </div>
-        <div class="company-info">
-          <strong>${companyName}</strong><br>
-          ${companyTin ? `TIN: ${companyTin}<br>` : ""}
-          ${companyAddress ? `${companyAddress}<br>` : ""}
-          ${companyPhone ? `Phone: ${companyPhone}<br>` : ""}
-          ${companyEmail ? `Email: ${companyEmail}<br>` : ""}
-          ${companyWebsite ? `Website: ${companyWebsite}<br>` : ""}
-          ${site?.name ? `Site: ${escapeHtml(site.name)}${site?.location ? `, ${escapeHtml(site.location)}` : ""}` : ""}
-        </div>
-      </div>
-
-      <div class="title-band">DISCOUNTED QUOTATION</div>
-
-      <div class="bill-row">
-        <div class="bill-to">
-          <div class="bill-label">BILL TO:</div>
-          <div class="client-box">
-            <strong>${escapeHtml(client.name || "-")}</strong>
-            ${client.address ? `<br>${escapeHtml(client.address)}` : ""}
-            ${client.phone ? `<br>${escapeHtml(client.phone)}` : ""}
-            ${client.email ? `<br>${escapeHtml(client.email)}` : ""}
-            ${client.contactPerson ? `<br>${escapeHtml(client.contactPerson)}` : ""}
-          </div>
-        </div>
-        <div class="meta">
-          <div class="meta-row"><div class="meta-label">Quote No:</div><div><strong>${escapeHtml(qt.qtNumber)}</strong></div></div>
-          <div class="meta-row"><div class="meta-label">Date:</div><div><strong>${formatLongDate(qt.createdAt)}</strong></div></div>
-          ${qt.validUntil ? `<div class="meta-row"><div class="meta-label">Valid Until:</div><div>${new Date(qt.validUntil).toLocaleDateString()}</div></div>` : ""}
-        </div>
-      </div>
-
-      <table>
-        <thead>
-          <tr>
-            <th class="col-no">SINO</th>
-            <th class="col-desc">DESCRIPTION</th>
-            <th class="col-unit">UNIT</th>
-            <th class="col-qty">Qty</th>
-            <th class="col-rate">Unit rate<br>(RWF)</th>
-            <th class="col-total">Total Amount<br>(RWF)</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${qt.items.map((item, index) => `
-          <tr>
-            <td class="col-no">${index + 1}</td>
-            <td class="description-cell">${escapeHtml(item.description || item.materialName || "-")}</td>
-            <td class="col-unit">${escapeHtml(item.unit || "-")}</td>
-            <td class="col-qty">${formatQty(item.quantityRequested)}</td>
-            <td class="col-rate">${formatRwf(item.unitPrice)}</td>
-            <td class="col-total">${formatRwf(item.totalPrice)}</td>
-          </tr>`).join("")}
-        </tbody>
-      </table>
-
-      <div class="terms-total">
-        <div class="terms">
-          Quote validity : ${validityDays} days<br>
-          ${qt.validUntil ? `Valid until : ${new Date(qt.validUntil).toLocaleDateString()}<br>` : ""}
-          ${qt.notes ? `${escapeHtml(qt.notes)}<br>` : ""}
-          ${qt.terms ? escapeHtml(qt.terms) : "Otherwise terms and conditions apply"}
-        </div>
-        <div class="totals">
-          <table>
-            <tr><td>${subtotalLabel}</td><td>${formatRwf(qt.subTotal)}</td></tr>
-            <tr><td>VAT (${formatQty(taxRate).replace(".00", "")}%)</td><td>${formatRwf(qt.taxAmount)}</td></tr>
-            <tr><td>Total Amount VAT</td><td>${formatRwf(qt.totalAmount)}</td></tr>
-          </table>
-        </div>
-      </div>
-
-      <div class="footer">
-        <div class="signature-block">
-          ${signatureSrc ? `<img class="signature-image" src="${signatureSrc}" alt="Authorized signature">` : `<div class="signature-placeholder">Authorized Signature</div>`}
-          <div class="signature-label">CTS CEO</div>
-          ${company.industry ? `<div class="signature-title">${escapeHtml(company.industry)}</div>` : ""}
-        </div>
-        <div class="stamp">
-          ${stampSrc ? `<img class="stamp-image" src="${stampSrc}" alt="${escapeHtml(companyName)} seal">` : `<div class="stamp-mark"><div class="stamp-text">TCS</div></div>`}
-        </div>
-        <div class="footer-note">
-          ${company.description ? `${escapeHtml(company.description)}<br>` : ""}
-          ${companyEmail ? `${companyEmail}<br>` : ""}
-          ${companyPhone ? companyPhone : ""}
-        </div>
-      </div>
-    </div>
-
-    <div class="no-print">
-      <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
-    </div>
+  ${pages.map(renderPage).join("")}
+  <div class="no-print">
+    <button class="print-button" onclick="window.print()">Print / Save as PDF</button>
   </div>
 </body>
 </html>`;

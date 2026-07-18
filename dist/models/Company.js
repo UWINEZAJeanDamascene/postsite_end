@@ -48,6 +48,10 @@ const CompanySchema = new mongoose_1.Schema({
         type: String,
         default: null,
     },
+    footerImage: {
+        type: String,
+        default: null,
+    },
     address: {
         type: String,
         default: '',

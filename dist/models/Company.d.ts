@@ -31,6 +31,7 @@ export interface ICompany extends Document {
     logo?: string;
     signatureImage?: string;
     stampImage?: string;
+    footerImage?: string;
     address?: string;
     phone?: string;
     email?: string;
