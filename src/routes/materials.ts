@@ -1,29 +1,39 @@
 import { Router } from 'express';
 import { authenticateToken, requireMainStockManager } from '../middleware/auth';
-import { Material, ActionType, ResourceType } from '../models';
-import { ActionLogService } from '../services/actionLogService';
-import mongoose from 'mongoose';
+import prisma from '../config/prisma';
+import { ActionLogService, ActionType, ResourceType } from '../services/actionLogService';
 
 const router = Router();
+
+function normalizeParam(param: string | string[] | undefined): string | undefined {
+  if (!param) return undefined;
+  return Array.isArray(param) ? param[0] : param;
+}
 
 // Search materials
 router.get('/search', authenticateToken, async (req, res): Promise<void> => {
   try {
     const { q } = req.query;
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
 
     if (!q || typeof q !== 'string' || q.length < 2) {
       res.json([]);
       return;
     }
 
-    const materials = await Material.find({
-      company_id,
-      name: { $regex: q, $options: 'i' },
-    }).limit(20);
+    const materials = await prisma.material.findMany({
+      where: {
+        companyId,
+        name: {
+          contains: q,
+          mode: 'insensitive',
+        },
+      },
+      take: 20,
+    });
 
     res.json(materials.map(material => ({
-      _id: material._id.toString(),
+      id: material.id,
       name: material.name,
       unit: material.unit,
     })));
@@ -36,15 +46,18 @@ router.get('/search', authenticateToken, async (req, res): Promise<void> => {
 // Get all materials
 router.get('/', authenticateToken, async (req, res): Promise<void> => {
   try {
-    const company_id = req.user!.company_id;
-    const materials = await Material.find({ company_id }).sort({ name: 1 });
+    const companyId = req.user!.company_id;
+    const materials = await prisma.material.findMany({
+      where: { companyId },
+      orderBy: { name: 'asc' },
+    });
 
     res.json(materials.map(material => ({
-      _id: material._id.toString(),
+      id: material.id,
       name: material.name,
       unit: material.unit,
       description: material.description,
-      company_id: material.company_id,
+      companyId: material.companyId,
       isActive: material.isActive,
       createdAt: material.createdAt,
     })));
@@ -57,13 +70,19 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
 // Get single material
 router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
-    const company_id = req.user!.company_id;
-    const idStr = Array.isArray(id) ? id[0] : id;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid material ID' });
+      return;
+    }
 
-    const material = await Material.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
+    const companyId = req.user!.company_id;
+
+    const material = await prisma.material.findFirst({
+      where: {
+        id,
+        companyId,
+      },
     });
 
     if (!material) {
@@ -72,11 +91,11 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
     }
 
     res.json({
-      _id: material._id.toString(),
+      id: material.id,
       name: material.name,
       unit: material.unit,
       description: material.description,
-      company_id: material.company_id,
+      companyId: material.companyId,
       isActive: material.isActive,
       createdAt: material.createdAt,
     });
@@ -90,17 +109,21 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
 router.post('/', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
     const { name, unit, description } = req.body;
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
 
     if (!name || !unit) {
       res.status(400).json({ error: 'Name and unit are required' });
       return;
     }
 
-    // Check if material already exists
-    const existingMaterial = await Material.findOne({
-      name: { $regex: new RegExp(`^${name}$`, 'i') },
-      company_id,
+    const existingMaterial = await prisma.material.findFirst({
+      where: {
+        companyId,
+        name: {
+          equals: name,
+          mode: 'insensitive',
+        },
+      },
     });
 
     if (existingMaterial) {
@@ -108,23 +131,24 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
       return;
     }
 
-    const material = await Material.create({
-      name,
-      unit,
-      description,
-      company_id,
-      isActive: true,
+    const material = await prisma.material.create({
+      data: {
+        name,
+        unit,
+        description,
+        companyId,
+        isActive: true,
+      },
     });
 
-    // Log material creation
-    await ActionLogService.logMaterialCreate(req, material._id.toString(), material.name);
+    await ActionLogService.logMaterialCreate(req, material.id, material.name);
 
     res.status(201).json({
-      _id: material._id.toString(),
+      id: material.id,
       name: material.name,
       unit: material.unit,
       description: material.description,
-      company_id: material.company_id,
+      companyId: material.companyId,
       isActive: material.isActive,
       createdAt: material.createdAt,
     });
@@ -137,38 +161,50 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
 // Update material (main manager only)
 router.put('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid material ID' });
+      return;
+    }
+
     const { name, unit, description } = req.body;
-    const company_id = req.user!.company_id;
-    const idStr = Array.isArray(id) ? id[0] : id;
+    const companyId = req.user!.company_id;
 
     const updateData: any = {};
     if (name) updateData.name = name;
     if (unit) updateData.unit = unit;
     if (description !== undefined) updateData.description = description;
 
-    const material = await Material.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(idStr), company_id },
-      { $set: updateData },
-      { returnDocument: 'after' }
-    );
+    const material = await prisma.material.updateMany({
+      where: {
+        id,
+        companyId,
+      },
+      data: updateData,
+    });
 
-    if (!material) {
+    if (material.count === 0) {
       res.status(404).json({ error: 'Material not found' });
       return;
     }
 
-    // Log material update
-    await ActionLogService.logMaterialUpdate(req, material._id.toString(), material.name);
+    const updatedMaterial = await prisma.material.findUnique({ where: { id } });
+
+    if (!updatedMaterial) {
+      res.status(404).json({ error: 'Material not found after update' });
+      return;
+    }
+
+    await ActionLogService.logMaterialUpdate(req, updatedMaterial.id, updatedMaterial.name);
 
     res.json({
-      _id: material._id.toString(),
-      name: material.name,
-      unit: material.unit,
-      description: material.description,
-      company_id: material.company_id,
-      isActive: material.isActive,
-      createdAt: material.createdAt,
+      id: updatedMaterial.id,
+      name: updatedMaterial.name,
+      unit: updatedMaterial.unit,
+      description: updatedMaterial.description,
+      companyId: updatedMaterial.companyId,
+      isActive: updatedMaterial.isActive,
+      createdAt: updatedMaterial.createdAt,
     });
   } catch (error) {
     console.error('Update material error:', error);
@@ -179,31 +215,44 @@ router.put('/:id', authenticateToken, requireMainStockManager, async (req, res):
 // Toggle material active status (main manager only)
 router.patch('/:id/active', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid material ID' });
+      return;
+    }
+
     const { isActive } = req.body;
-    const company_id = req.user!.company_id;
-    const idStr = Array.isArray(id) ? id[0] : id;
+    const companyId = req.user!.company_id;
 
-    const material = await Material.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(idStr), company_id },
-      { $set: { isActive } },
-      { returnDocument: 'after' }
-    );
+    const updated = await prisma.material.updateMany({
+      where: {
+        id,
+        companyId,
+      },
+      data: {
+        isActive,
+      },
+    });
 
-    if (!material) {
+    if (updated.count === 0) {
       res.status(404).json({ error: 'Material not found' });
       return;
     }
 
-    // Log material status change (update)
-    await ActionLogService.logMaterialUpdate(req, material._id.toString(), material.name);
+    const material = await prisma.material.findUnique({ where: { id } });
+    if (!material) {
+      res.status(404).json({ error: 'Material not found after update' });
+      return;
+    }
+
+    await ActionLogService.logMaterialUpdate(req, material.id, material.name);
 
     res.json({
-      _id: material._id.toString(),
+      id: material.id,
       name: material.name,
       unit: material.unit,
       description: material.description,
-      company_id: material.company_id,
+      companyId: material.companyId,
       isActive: material.isActive,
       createdAt: material.createdAt,
     });
@@ -216,13 +265,19 @@ router.patch('/:id/active', authenticateToken, requireMainStockManager, async (r
 // Delete material (main manager only)
 router.delete('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
-    const company_id = req.user!.company_id;
-    const idStr = Array.isArray(id) ? id[0] : id;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid material ID' });
+      return;
+    }
 
-    const material = await Material.findOneAndDelete({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
+    const companyId = req.user!.company_id;
+
+    const material = await prisma.material.findFirst({
+      where: {
+        id,
+        companyId,
+      },
     });
 
     if (!material) {
@@ -230,14 +285,15 @@ router.delete('/:id', authenticateToken, requireMainStockManager, async (req, re
       return;
     }
 
-    // Log material deletion
+    await prisma.material.delete({ where: { id } });
+
     await ActionLogService.logFromRequest(
       req,
       ActionType.DELETE,
       ResourceType.MATERIAL,
       `Deleted material: ${material.name}`,
       {
-        resourceId: material._id.toString(),
+        resourceId: material.id,
         resourceName: material.name,
       }
     );

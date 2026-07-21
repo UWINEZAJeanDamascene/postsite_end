@@ -1,7 +1,38 @@
-import { createNotification, NotificationType, NotificationPriority } from '../models/Notification';
+import {
+  NotificationPriority,
+  NotificationType,
+  type Prisma,
+} from '@prisma/client';
+import prisma from '../config/prisma';
+
+async function createNotification(data: {
+  userId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  priority?: NotificationPriority;
+  data?: Prisma.InputJsonValue;
+  link?: string;
+}) {
+  try {
+    return await prisma.notification.create({
+      data: {
+        userId: data.userId,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+        priority: data.priority ?? NotificationPriority.MEDIUM,
+        data: data.data,
+        link: data.link,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to create notification:', error);
+    return null;
+  }
+}
 
 export class NotificationService {
-  // Create notification for material received
   static async notifyMaterialReceived(
     userId: string,
     materialName: string,
@@ -18,7 +49,6 @@ export class NotificationService {
     });
   }
 
-  // Create notification for material used
   static async notifyMaterialUsed(
     userId: string,
     materialName: string,
@@ -35,7 +65,6 @@ export class NotificationService {
     });
   }
 
-  // Create notification for low stock
   static async notifyLowStock(
     userId: string,
     materialName: string,
@@ -52,7 +81,6 @@ export class NotificationService {
     });
   }
 
-  // Create notification for site created
   static async notifySiteCreated(userId: string, siteName: string, location: string) {
     return createNotification({
       userId,
@@ -64,7 +92,6 @@ export class NotificationService {
     });
   }
 
-  // Create notification for price updated
   static async notifyPriceUpdated(
     userId: string,
     materialName: string,
@@ -81,7 +108,6 @@ export class NotificationService {
     });
   }
 
-  // Create notification for record marked as received
   static async notifyRecordReceived(
     userId: string,
     materialName: string,
@@ -97,7 +123,6 @@ export class NotificationService {
     });
   }
 
-  // Create generic system notification
   static async notifySystem(userId: string, title: string, message: string) {
     return createNotification({
       userId,

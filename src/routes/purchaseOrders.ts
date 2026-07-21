@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { PurchaseOrder, SiteRecord, Site, MainStockRecord } from '../models';
+import prisma from '../config/prisma';
+import { syncSiteRecordToMainStock } from '../services/autoAdjustment';
+import { broadcastToClients } from '../websocket/server';
 import { authenticateToken, requireMainStockManager } from '../middleware/auth';
-import { ActionLogService } from '../services/actionLogService';
-import { ActionType, ResourceType } from '../models/ActionLog';
-import mongoose from 'mongoose';
+import { ActionLogService, ActionType, ResourceType } from '../services/actionLogService';
 import { UserRole } from '../types';
+import { toApiStatus, toPrismaStatus } from '../utils/apiEnums';
 
 const router = Router();
 
@@ -12,19 +13,16 @@ const router = Router();
 async function generatePONumber(company_id: string): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `PO-${year}-`;
-
-  // Find the last PO number for this company
-  const lastPO = await PurchaseOrder.findOne(
-    { company_id, poNumber: { $regex: `^${prefix}` } },
-    { poNumber: 1 }
-  ).sort({ poNumber: -1 });
+  const last = await prisma.purchaseOrder.findFirst({
+    where: { companyId: company_id, poNumber: { startsWith: prefix } },
+    orderBy: { poNumber: 'desc' },
+    select: { poNumber: true },
+  });
 
   let sequence = 1;
-  if (lastPO) {
-    const lastNumber = parseInt(lastPO.poNumber.split('-')[2], 10);
-    if (!isNaN(lastNumber)) {
-      sequence = lastNumber + 1;
-    }
+  if (last && last.poNumber) {
+    const n = parseInt(last.poNumber.split('-')[2], 10);
+    if (!isNaN(n)) sequence = n + 1;
   }
 
   return `${prefix}${sequence.toString().padStart(4, '0')}`;
@@ -45,7 +43,7 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
     const company_id = req.user!.company_id;
     const { status, siteId, supplier, startDate, endDate, page = '1', limit = '20' } = req.query;
 
-    let where: any = { company_id };
+    let where: any = { companyId: company_id };
 
     // Site managers only see POs for their assigned sites
     if (req.user!.role === UserRole.SITE_MANAGER) {
@@ -53,23 +51,15 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
         res.json({ records: [], total: 0, page: 1, totalPages: 0 });
         return;
       }
-      const assignedIds = req.assignedSiteIds
-        .filter(id => mongoose.Types.ObjectId.isValid(id))
-        .map(id => new mongoose.Types.ObjectId(id));
-      where.site_id = { $in: assignedIds };
+      where.siteId = { in: req.assignedSiteIds };
     }
-
-    if (status && status !== 'all') where.status = status;
-    if (siteId && mongoose.Types.ObjectId.isValid(siteId as string)) {
-      where.site_id = new mongoose.Types.ObjectId(siteId as string);
-    }
-    if (supplier) {
-      where['supplier.name'] = { $regex: supplier, $options: 'i' };
-    }
+    if (status && status !== 'all') where.status = toPrismaStatus(status as string);
+    if (siteId) where.siteId = siteId as string;
+    if (supplier) where.supplierName = { contains: supplier as string, mode: 'insensitive' };
     if (startDate || endDate) {
-      where.createdAt = {};
-      if (startDate) where.createdAt.$gte = new Date(startDate as string);
-      if (endDate) where.createdAt.$lte = new Date(endDate as string);
+      where.createdAt = {} as any;
+      if (startDate) where.createdAt.gte = new Date(startDate as string);
+      if (endDate) where.createdAt.lte = new Date(endDate as string);
     }
 
     const pageNum = parseInt(page as string, 10) || 1;
@@ -77,22 +67,23 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
     const skip = (pageNum - 1) * limitNum;
 
     const [records, total] = await Promise.all([
-      PurchaseOrder.find(where)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .populate('site_id', 'name location')
-        .populate('createdBy', 'name'),
-      PurchaseOrder.countDocuments(where),
+      prisma.purchaseOrder.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limitNum,
+        include: { site: { select: { name: true, location: true } }, createdBy: { select: { name: true } } },
+      }),
+      prisma.purchaseOrder.count({ where }),
     ]);
 
     res.json({
-      records: records.map((po) => ({
-        id: po._id.toString(),
+      records: records.map(po => ({
+        id: po.id,
         poNumber: po.poNumber,
         supplier: po.supplier,
-        site: po.site_id,
-        status: po.status,
+        site: po.site,
+        status: toApiStatus(po.status),
         items: po.items,
         subTotal: po.subTotal,
         taxRate: po.taxRate,
@@ -102,7 +93,7 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
         terms: po.terms,
         sentDate: po.sentDate,
         expectedDeliveryDate: po.expectedDeliveryDate,
-        createdBy: (po.createdBy as any)?.name || po.createdBy,
+        createdBy: po.createdBy?.name || po.createdById,
         createdAt: po.createdAt,
         updatedAt: po.updatedAt,
       })),
@@ -123,33 +114,26 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    })
-      .populate('site_id', 'name location')
-      .populate('createdBy', 'name');
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr }, include: { site: true, createdBy: true } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
     // Check site access for site managers
     if (req.user!.role === UserRole.SITE_MANAGER) {
-      const siteIdStr = po.site_id._id?.toString() || po.site_id.toString();
-      if (!req.assignedSiteIds?.includes(siteIdStr)) {
+      if (!req.assignedSiteIds?.includes(po.siteId)) {
         res.status(403).json({ error: 'Access denied to this purchase order' });
         return;
       }
     }
 
     res.json({
-      id: po._id.toString(),
+      id: po.id,
       poNumber: po.poNumber,
       supplier: po.supplier,
-      site: po.site_id,
-      status: po.status,
+      site: po.site,
+      status: toApiStatus(po.status),
       items: po.items,
       subTotal: po.subTotal,
       taxRate: po.taxRate,
@@ -159,7 +143,7 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
       terms: po.terms,
       sentDate: po.sentDate,
       expectedDeliveryDate: po.expectedDeliveryDate,
-      createdBy: (po.createdBy as any)?.name || po.createdBy,
+      createdBy: po.createdBy?.name || po.createdById,
       createdAt: po.createdAt,
       updatedAt: po.updatedAt,
     });
@@ -190,8 +174,8 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
     }
 
     // Validate site belongs to company
-    const site = await Site.findOne({ _id: new mongoose.Types.ObjectId(site_id), company_id });
-    if (!site) {
+    const site = await prisma.site.findUnique({ where: { id: site_id } });
+    if (!site || site.companyId !== company_id) {
       res.status(404).json({ error: 'Site not found' });
       return;
     }
@@ -214,19 +198,25 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
     // Generate PO number
     const poNumber = await generatePONumber(company_id);
 
-    const po = await PurchaseOrder.create({
-      poNumber,
-      supplier,
-      site_id: new mongoose.Types.ObjectId(site_id),
-      status: 'draft',
-      items: processedItems,
-      ...totals,
-      taxRate,
-      notes,
-      terms,
-      expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : undefined,
-      createdBy: new mongoose.Types.ObjectId(req.user!.id),
-      company_id,
+
+    const po = await prisma.purchaseOrder.create({
+      data: {
+        poNumber,
+        supplier,
+        supplierName: supplier.name,
+        siteId: site_id,
+        status: 'DRAFT',
+        items: processedItems,
+        subTotal: totals.subTotal,
+        taxRate,
+        taxAmount: totals.taxAmount,
+        totalAmount: totals.totalAmount,
+        notes,
+        terms,
+        expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null,
+        createdById: req.user!.id,
+        companyId: company_id,
+      },
     });
 
     // Log action
@@ -235,15 +225,15 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
       ActionType.CREATE,
       ResourceType.PURCHASE_ORDER,
       `Created purchase order ${poNumber} for ${supplier.name}`,
-      { resourceId: po._id.toString(), resourceName: poNumber }
+      { resourceId: po.id, resourceName: poNumber }
     );
 
     res.status(201).json({
-      id: po._id.toString(),
+      id: po.id,
       poNumber: po.poNumber,
       supplier: po.supplier,
-      site_id: po.site_id,
-      status: po.status,
+      site_id: po.siteId,
+      status: toApiStatus(po.status),
       items: po.items,
       totalAmount: po.totalAmount,
       message: 'Purchase order created successfully',
@@ -261,29 +251,28 @@ router.put('/:id', authenticateToken, requireMainStockManager, async (req, res):
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
     // Only draft POs can be edited
-    if (po.status !== 'draft') {
+    if (po.status !== 'DRAFT') {
       res.status(400).json({ error: 'Only draft purchase orders can be edited' });
       return;
     }
 
     const { supplier, site_id, items, taxRate, notes, terms, expectedDeliveryDate } = req.body;
 
-    // Update fields if provided
-    if (supplier) po.supplier = { ...po.supplier, ...supplier };
-    if (site_id) po.site_id = new mongoose.Types.ObjectId(site_id);
+    const data: any = {};
+    if (supplier) {
+      data.supplier = supplier;
+      if (supplier.name) data.supplierName = supplier.name;
+    }
+    if (site_id) data.siteId = site_id;
     if (items && items.length > 0) {
-      po.items = items.map((item: any) => ({
+      const processed = items.map((item: any) => ({
         materialName: item.materialName,
         material_id: item.material_id || null,
         description: item.description || '',
@@ -294,40 +283,29 @@ router.put('/:id', authenticateToken, requireMainStockManager, async (req, res):
         unit: item.unit || 'pcs',
         notes: item.notes || '',
       }));
-
-      const totals = calculateTotals(po.items, taxRate !== undefined ? taxRate : po.taxRate);
-      po.subTotal = totals.subTotal;
-      po.taxAmount = totals.taxAmount;
-      po.totalAmount = totals.totalAmount;
+      data.items = processed;
+      const totals = calculateTotals(processed, taxRate !== undefined ? taxRate : (po.taxRate as number));
+      data.subTotal = totals.subTotal;
+      data.taxAmount = totals.taxAmount;
+      data.totalAmount = totals.totalAmount;
     } else if (taxRate !== undefined) {
-      // Only taxRate changed, recalculate with new rate
-      const totals = calculateTotals(po.items, taxRate);
-      po.subTotal = totals.subTotal;
-      po.taxAmount = totals.taxAmount;
-      po.totalAmount = totals.totalAmount;
+      const existingItems = Array.isArray(po.items) ? po.items as any[] : [];
+      const totals = calculateTotals(existingItems, taxRate);
+      data.subTotal = totals.subTotal;
+      data.taxAmount = totals.taxAmount;
+      data.totalAmount = totals.totalAmount;
+      data.taxRate = taxRate;
     }
-    if (taxRate !== undefined) po.taxRate = taxRate;
-    if (notes !== undefined) po.notes = notes;
-    if (terms !== undefined) po.terms = terms;
-    if (expectedDeliveryDate !== undefined) {
-      po.expectedDeliveryDate = expectedDeliveryDate ? new Date(expectedDeliveryDate) : undefined;
-    }
+    if (taxRate !== undefined) data.taxRate = taxRate;
+    if (notes !== undefined) data.notes = notes;
+    if (terms !== undefined) data.terms = terms;
+    if (expectedDeliveryDate !== undefined) data.expectedDeliveryDate = expectedDeliveryDate ? new Date(expectedDeliveryDate) : null;
 
-    await po.save();
+    const updated = await prisma.purchaseOrder.update({ where: { id: idStr }, data });
 
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.UPDATE,
-      ResourceType.PURCHASE_ORDER,
-      `Updated purchase order ${po.poNumber}`,
-      { resourceId: po._id.toString(), resourceName: po.poNumber }
-    );
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.PURCHASE_ORDER, `Updated purchase order ${updated.poNumber}`, { resourceId: updated.id, resourceName: updated.poNumber });
 
-    res.json({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      message: 'Purchase order updated successfully',
-    });
+    res.json({ id: updated.id, poNumber: updated.poNumber, message: 'Purchase order updated successfully' });
   } catch (error) {
     console.error('Update purchase order error:', error);
     res.status(500).json({ error: 'Failed to update purchase order' });
@@ -341,31 +319,20 @@ router.delete('/:id', authenticateToken, requireMainStockManager, async (req, re
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
-    // Only draft POs can be deleted
-    if (po.status !== 'draft') {
+    if (po.status !== 'DRAFT') {
       res.status(400).json({ error: 'Only draft purchase orders can be deleted' });
       return;
     }
 
-    await PurchaseOrder.deleteOne({ _id: new mongoose.Types.ObjectId(idStr) });
+    await prisma.purchaseOrder.delete({ where: { id: idStr } });
 
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.DELETE,
-      ResourceType.PURCHASE_ORDER,
-      `Deleted purchase order ${po.poNumber}`,
-      { resourceId: idStr, resourceName: po.poNumber }
-    );
+    await ActionLogService.logFromRequest(req, ActionType.DELETE, ResourceType.PURCHASE_ORDER, `Deleted purchase order ${po.poNumber}`, { resourceId: idStr, resourceName: po.poNumber });
 
     res.json({ message: 'Purchase order deleted successfully' });
   } catch (error) {
@@ -381,41 +348,21 @@ router.patch('/:id/send', authenticateToken, requireMainStockManager, async (req
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
-    // Can only send draft POs
-    if (po.status !== 'draft') {
+    if (po.status !== 'DRAFT') {
       res.status(400).json({ error: 'Only draft purchase orders can be sent' });
       return;
     }
+    const updated = await prisma.purchaseOrder.update({ where: { id: idStr }, data: { status: 'SENT', sentDate: new Date() } });
 
-    po.status = 'sent';
-    po.sentDate = new Date();
-    await po.save();
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.PURCHASE_ORDER, `Sent purchase order ${updated.poNumber} to ${updated.supplierName}`, { resourceId: updated.id, resourceName: updated.poNumber });
 
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.UPDATE,
-      ResourceType.PURCHASE_ORDER,
-      `Sent purchase order ${po.poNumber} to ${po.supplier.name}`,
-      { resourceId: po._id.toString(), resourceName: po.poNumber }
-    );
-
-    res.json({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      status: po.status,
-      sentDate: po.sentDate,
-      message: 'Purchase order sent successfully',
-    });
+    res.json({ id: updated.id, poNumber: updated.poNumber, status: toApiStatus(updated.status), sentDate: updated.sentDate, message: 'Purchase order sent successfully' });
   } catch (error) {
     console.error('Send purchase order error:', error);
     res.status(500).json({ error: 'Failed to send purchase order' });
@@ -430,92 +377,62 @@ router.patch('/:id/receive', authenticateToken, async (req, res): Promise<void> 
     const { receivedItems, date, notes } = req.body;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
     // Check site access for site managers
     if (req.user!.role === UserRole.SITE_MANAGER) {
-      const siteIdStr = po.site_id.toString();
-      if (!req.assignedSiteIds?.includes(siteIdStr)) {
+      if (!req.assignedSiteIds?.includes(po.siteId)) {
         res.status(403).json({ error: 'Access denied to this purchase order' });
         return;
       }
     }
 
-    // Can receive from sent or partial POs
-    if (!['sent', 'partial'].includes(po.status)) {
+    if (!['SENT', 'PARTIAL'].includes(String(po.status))) {
       res.status(400).json({ error: 'Can only receive items from sent or partially received POs' });
       return;
     }
 
-    // Process received items
     const siteRecords: any[] = [];
     let allItemsFullyReceived = true;
 
+    const items = Array.isArray(po.items) ? po.items as any[] : [];
     for (const received of receivedItems) {
-      const itemIndex = po.items.findIndex(
-        (item) => item._id?.toString() === received.itemId
-      );
-
+      const itemIndex = items.findIndex((item: any) => (item.id && item.id.toString() === received.itemId) || (item._id && item._id.toString() === received.itemId));
       if (itemIndex === -1) continue;
 
-      const item = po.items[itemIndex];
+      const item = items[itemIndex];
       const receiveQty = received.quantity;
 
-      // Update received quantity
-      item.quantityReceived += receiveQty;
+      item.quantityReceived = (item.quantityReceived || 0) + receiveQty;
+      if (item.quantityReceived < (item.quantityOrdered || 0)) allItemsFullyReceived = false;
 
-      if (item.quantityReceived < item.quantityOrdered) {
-        allItemsFullyReceived = false;
-      }
-
-      // Create site record for this receipt
-      const siteRecord = await SiteRecord.create({
-        site_id: po.site_id,
+      const siteRecord = await prisma.siteRecord.create({ data: {
+        siteId: po.siteId,
         materialName: item.materialName,
-        material_id: item.material_id,
+        materialId: item.material_id || null,
         quantityReceived: receiveQty,
         quantityUsed: 0,
         date: date ? new Date(date) : new Date(),
         notes: notes || `Received from PO ${po.poNumber}`,
-        recordedBy: new mongoose.Types.ObjectId(req.user!.id),
-        company_id,
-        syncedToMainStock: false,
-      });
-
+        createdById: req.user!.id,
+        companyId: company_id,
+      }});
+      // sync to main stock
+      const mainStockRecord = await syncSiteRecordToMainStock(siteRecord.id);
+      broadcastToClients({ type: 'SITE_RECORD_CREATED', payload: { siteRecord, mainStockRecord }, timestamp: new Date() });
       siteRecords.push(siteRecord);
     }
 
-    // Update PO status
-    po.status = allItemsFullyReceived ? 'received' : 'partial';
-    await po.save();
+    const updatedStatus = allItemsFullyReceived ? 'RECEIVED' : 'PARTIAL';
+    await prisma.purchaseOrder.update({ where: { id: idStr }, data: { status: updatedStatus, items } });
 
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.UPDATE,
-      ResourceType.PURCHASE_ORDER,
-      `Received items from purchase order ${po.poNumber}`,
-      {
-        resourceId: po._id.toString(),
-        resourceName: po.poNumber,
-        details: { receivedItems: receivedItems.length, siteRecords: siteRecords.length },
-      }
-    );
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.PURCHASE_ORDER, `Received items from purchase order ${po.poNumber}`, { resourceId: po.id, resourceName: po.poNumber, details: { receivedItems: receivedItems.length, siteRecords: siteRecords.length } });
 
-    res.json({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      status: po.status,
-      siteRecords: siteRecords.map((sr) => sr._id.toString()),
-      message: 'Items received successfully',
-    });
+    res.json({ id: po.id, poNumber: po.poNumber, status: toApiStatus(updatedStatus), siteRecords: siteRecords.map(sr => sr.id), message: 'Items received successfully' });
   } catch (error) {
     console.error('Receive items error:', error);
     res.status(500).json({ error: 'Failed to receive items' });
@@ -529,39 +446,29 @@ router.patch('/:id/complete', authenticateToken, requireMainStockManager, async 
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
     // Can only complete received or partial POs
-    if (!['received', 'partial'].includes(po.status)) {
+    if (!['RECEIVED', 'PARTIAL'].includes(String(po.status).toUpperCase())) {
       res.status(400).json({ error: 'Can only complete received or partially received POs' });
       return;
     }
 
-    po.status = 'completed';
-    await po.save();
+    const updated = await prisma.purchaseOrder.update({ where: { id: idStr }, data: { status: 'COMPLETED' } });
 
     await ActionLogService.logFromRequest(
       req,
       ActionType.UPDATE,
       ResourceType.PURCHASE_ORDER,
-      `Completed purchase order ${po.poNumber}`,
-      { resourceId: po._id.toString(), resourceName: po.poNumber }
+      `Completed purchase order ${updated.poNumber}`,
+      { resourceId: updated.id, resourceName: updated.poNumber }
     );
 
-    res.json({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      status: po.status,
-      message: 'Purchase order marked as completed',
-    });
+    res.json({ id: updated.id, poNumber: updated.poNumber, status: toApiStatus(updated.status), message: 'Purchase order marked as completed' });
   } catch (error) {
     console.error('Complete purchase order error:', error);
     res.status(500).json({ error: 'Failed to complete purchase order' });
@@ -575,39 +482,29 @@ router.patch('/:id/cancel', authenticateToken, requireMainStockManager, async (r
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!po) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
     // Cannot cancel completed POs
-    if (po.status === 'completed') {
+    if (String(po.status).toUpperCase() === 'COMPLETED') {
       res.status(400).json({ error: 'Cannot cancel completed purchase orders' });
       return;
     }
 
-    po.status = 'cancelled';
-    await po.save();
+    const updated = await prisma.purchaseOrder.update({ where: { id: idStr }, data: { status: 'CANCELLED' } });
 
     await ActionLogService.logFromRequest(
       req,
       ActionType.UPDATE,
       ResourceType.PURCHASE_ORDER,
-      `Cancelled purchase order ${po.poNumber}`,
-      { resourceId: po._id.toString(), resourceName: po.poNumber }
+      `Cancelled purchase order ${updated.poNumber}`,
+      { resourceId: updated.id, resourceName: updated.poNumber }
     );
 
-    res.json({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      status: po.status,
-      message: 'Purchase order cancelled successfully',
-    });
+    res.json({ id: updated.id, poNumber: updated.poNumber, status: toApiStatus(updated.status), message: 'Purchase order cancelled successfully' });
   } catch (error) {
     console.error('Cancel purchase order error:', error);
     res.status(500).json({ error: 'Failed to cancel purchase order' });
@@ -621,45 +518,42 @@ router.post('/:id/duplicate', authenticateToken, requireMainStockManager, async 
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const originalPO = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    });
-
-    if (!originalPO) {
+    const originalPO = await prisma.purchaseOrder.findUnique({ where: { id: idStr } });
+    if (!originalPO || originalPO.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
-    // Generate new PO number
     const poNumber = await generatePONumber(company_id);
-
-    // Create new PO with same data
-    const newPO = await PurchaseOrder.create({
-      poNumber,
-      supplier: originalPO.supplier,
-      site_id: originalPO.site_id,
-      status: 'draft',
-      items: originalPO.items.map(item => ({
-        materialName: item.materialName,
-        material_id: item.material_id,
-        description: item.description,
-        quantityOrdered: item.quantityOrdered,
-        quantityReceived: 0,
-        unitPrice: item.unitPrice,
-        totalPrice: item.totalPrice,
-        unit: item.unit,
-        notes: item.notes,
-      })),
-      subTotal: originalPO.subTotal,
-      taxRate: originalPO.taxRate,
-      taxAmount: originalPO.taxAmount,
-      totalAmount: originalPO.totalAmount,
-      notes: `Duplicated from ${originalPO.poNumber}. ${originalPO.notes || ''}`,
-      terms: originalPO.terms,
-      expectedDeliveryDate: originalPO.expectedDeliveryDate,
-      createdBy: new mongoose.Types.ObjectId(req.user!.id),
-      company_id,
+    const items = Array.isArray(originalPO.items) ? (originalPO.items as any[]) : [];
+    const newPO = await prisma.purchaseOrder.create({
+      data: {
+        poNumber,
+        supplier: originalPO.supplier as any,
+        supplierName: originalPO.supplierName || undefined,
+        siteId: originalPO.siteId,
+        status: 'DRAFT',
+        items: items.map((item: any) => ({
+          materialName: item.materialName,
+          material_id: item.material_id,
+          description: item.description,
+          quantityOrdered: item.quantityOrdered,
+          quantityReceived: 0,
+          unitPrice: item.unitPrice,
+          totalPrice: item.totalPrice,
+          unit: item.unit,
+          notes: item.notes,
+        })),
+        subTotal: originalPO.subTotal,
+        taxRate: originalPO.taxRate,
+        taxAmount: originalPO.taxAmount,
+        totalAmount: originalPO.totalAmount,
+        notes: `Duplicated from ${originalPO.poNumber}. ${originalPO.notes || ''}`,
+        terms: originalPO.terms,
+        expectedDeliveryDate: originalPO.expectedDeliveryDate,
+        createdById: req.user!.id,
+        companyId: company_id,
+      },
     });
 
     await ActionLogService.logFromRequest(
@@ -667,11 +561,11 @@ router.post('/:id/duplicate', authenticateToken, requireMainStockManager, async 
       ActionType.CREATE,
       ResourceType.PURCHASE_ORDER,
       `Duplicated purchase order ${originalPO.poNumber} to ${poNumber}`,
-      { resourceId: newPO._id.toString(), resourceName: poNumber }
+      { resourceId: newPO.id, resourceName: poNumber }
     );
 
     res.status(201).json({
-      id: newPO._id.toString(),
+      id: newPO.id,
       poNumber: newPO.poNumber,
       message: `Purchase order duplicated successfully as ${poNumber}`,
     });
@@ -687,29 +581,29 @@ router.get('/export/excel', authenticateToken, requireMainStockManager, async (r
     const company_id = req.user!.company_id;
     const { status, startDate, endDate } = req.query;
 
-    let where: any = { company_id };
-    if (status && status !== 'all') where.status = status;
+    const where: any = { companyId: company_id };
+    if (status && status !== 'all') where.status = toPrismaStatus(status as string);
     if (startDate || endDate) {
-      where.createdAt = {};
-      if (startDate) where.createdAt.$gte = new Date(startDate as string);
-      if (endDate) where.createdAt.$lte = new Date(endDate as string);
+      where.createdAt = {} as any;
+      if (startDate) where.createdAt.gte = new Date(startDate as string);
+      if (endDate) where.createdAt.lte = new Date(endDate as string);
     }
 
-    const pos = await PurchaseOrder.find(where)
-      .sort({ createdAt: -1 })
-      .populate('site_id', 'name')
-      .lean();
+    const pos = await prisma.purchaseOrder.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: { site: { select: { name: true } } },
+    });
 
-    // Format data for Excel
     const data = pos.map((po: any) => ({
       'PO Number': po.poNumber,
       'Status': po.status,
-      'Supplier': po.supplier.name,
-      'Contact': po.supplier.contactPerson,
-      'Email': po.supplier.email,
-      'Phone': po.supplier.phone,
-      'Site': po.site_id?.name || '',
-      'Items Count': po.items.length,
+      'Supplier': po.supplier?.name || '',
+      'Contact': po.supplier?.contactPerson || '',
+      'Email': po.supplier?.email || '',
+      'Phone': po.supplier?.phone || '',
+      'Site': po.site?.name || '',
+      'Items Count': Array.isArray(po.items) ? po.items.length : 0,
       'Subtotal': po.subTotal,
       'Tax Rate (%)': po.taxRate,
       'Tax Amount': po.taxAmount,
@@ -737,67 +631,35 @@ router.get('/stats/overview', authenticateToken, async (req, res): Promise<void>
   try {
     const company_id = req.user!.company_id;
 
-    // Site filter for site managers
     let siteFilter: any = {};
     if (req.user!.role === UserRole.SITE_MANAGER) {
       if (!req.assignedSiteIds || req.assignedSiteIds.length === 0) {
-        res.json({
-          total: 0,
-          byStatus: {},
-          totalValue: 0,
-          pendingValue: 0,
-        });
+        res.json({ total: 0, byStatus: {}, totalValue: 0, pendingValue: 0 });
         return;
       }
-      const assignedIds = req.assignedSiteIds
-        .filter(id => mongoose.Types.ObjectId.isValid(id))
-        .map(id => new mongoose.Types.ObjectId(id));
-      siteFilter = { site_id: { $in: assignedIds } };
+      siteFilter = { siteId: { in: req.assignedSiteIds } };
     }
 
-    const stats = await PurchaseOrder.aggregate([
-      { $match: { company_id, ...siteFilter } },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          byStatus: {
-            $push: {
-              status: '$status',
-              count: { $sum: 1 },
-              value: '$totalAmount',
-            },
-          },
-          totalValue: { $sum: '$totalAmount' },
-        },
-      },
-    ]);
-
-    // Count by status
-    const byStatus: Record<string, { count: number; value: number }> = {};
-    const statusCounts = await PurchaseOrder.aggregate([
-      { $match: { company_id, ...siteFilter } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          value: { $sum: '$totalAmount' },
-        },
-      },
-    ]);
-
-    statusCounts.forEach((stat) => {
-      byStatus[stat._id] = { count: stat.count, value: stat.value };
+    const pos = await prisma.purchaseOrder.findMany({
+      where: { companyId: company_id, ...siteFilter },
+      select: { status: true, totalAmount: true },
     });
 
-    // Pending value (sent + partial)
-    const pendingValue =
-      (byStatus.sent?.value || 0) + (byStatus.partial?.value || 0);
+    const byStatus: Record<string, { count: number; value: number }> = {};
+    for (const po of pos) {
+      const status = String(po.status).toUpperCase();
+      if (!byStatus[status]) byStatus[status] = { count: 0, value: 0 };
+      byStatus[status].count += 1;
+      byStatus[status].value += Number(po.totalAmount || 0);
+    }
+
+    const pendingValue = [byStatus.SENT, byStatus.PARTIAL]
+      .reduce((sum, entry) => sum + (entry?.value || 0), 0);
 
     res.json({
-      total: stats[0]?.total || 0,
+      total: pos.length,
       byStatus,
-      totalValue: stats[0]?.totalValue || 0,
+      totalValue: pos.reduce((sum, po) => sum + Number(po.totalAmount || 0), 0),
       pendingValue,
     });
   } catch (error) {
@@ -811,53 +673,56 @@ router.get('/reports/aging', authenticateToken, async (req, res): Promise<void> 
   try {
     const company_id = req.user!.company_id;
 
-    // Site filter for site managers
     let siteFilter: any = {};
     if (req.user!.role === UserRole.SITE_MANAGER) {
       if (!req.assignedSiteIds || req.assignedSiteIds.length === 0) {
         res.json({ overdue: [], approaching: [] });
         return;
       }
-      const assignedIds = req.assignedSiteIds
-        .filter(id => mongoose.Types.ObjectId.isValid(id))
-        .map(id => new mongoose.Types.ObjectId(id));
-      siteFilter = { site_id: { $in: assignedIds } };
+      siteFilter = { siteId: { in: req.assignedSiteIds } };
     }
 
     const now = new Date();
     const threeDaysFromNow = new Date(now);
     threeDaysFromNow.setDate(now.getDate() + 3);
 
-    // Overdue POs (expected delivery passed, not received/completed)
-    const overdue = await PurchaseOrder.find({
-      company_id,
-      ...siteFilter,
-      expectedDeliveryDate: { $lt: now },
-      status: { $in: ['sent', 'partial'] },
-    }).populate('site_id', 'name');
-
-    // Approaching delivery (within 3 days)
-    const approaching = await PurchaseOrder.find({
-      company_id,
-      ...siteFilter,
-      expectedDeliveryDate: { $gte: now, $lte: threeDaysFromNow },
-      status: { $in: ['sent', 'partial'] },
-    }).populate('site_id', 'name');
+    const [overdue, approaching] = await Promise.all([
+      prisma.purchaseOrder.findMany({
+        where: {
+          companyId: company_id,
+          ...siteFilter,
+          expectedDeliveryDate: { lt: now },
+          status: { in: ['SENT', 'PARTIAL'] as any },
+        },
+        include: { site: { select: { name: true } } },
+        orderBy: { expectedDeliveryDate: 'asc' },
+      }),
+      prisma.purchaseOrder.findMany({
+        where: {
+          companyId: company_id,
+          ...siteFilter,
+          expectedDeliveryDate: { gte: now, lte: threeDaysFromNow },
+          status: { in: ['SENT', 'PARTIAL'] as any },
+        },
+        include: { site: { select: { name: true } } },
+        orderBy: { expectedDeliveryDate: 'asc' },
+      }),
+    ]);
 
     res.json({
       overdue: overdue.map(po => ({
-        id: po._id.toString(),
+        id: po.id,
         poNumber: po.poNumber,
         supplier: po.supplier,
-        site: (po.site_id as any)?.name,
+        site: po.site?.name,
         expectedDeliveryDate: po.expectedDeliveryDate,
         daysOverdue: Math.floor((now.getTime() - (po.expectedDeliveryDate?.getTime() || now.getTime())) / (1000 * 60 * 60 * 24)),
       })),
       approaching: approaching.map(po => ({
-        id: po._id.toString(),
+        id: po.id,
         poNumber: po.poNumber,
         supplier: po.supplier,
-        site: (po.site_id as any)?.name,
+        site: po.site?.name,
         expectedDeliveryDate: po.expectedDeliveryDate,
         daysRemaining: Math.ceil(((po.expectedDeliveryDate?.getTime() || now.getTime()) - now.getTime()) / (1000 * 60 * 60 * 24)),
       })),
@@ -873,42 +738,51 @@ router.get('/reports/suppliers', authenticateToken, requireMainStockManager, asy
   try {
     const company_id = req.user!.company_id;
 
-    const supplierStats = await PurchaseOrder.aggregate([
-      { $match: { company_id } },
-      {
-        $group: {
-          _id: '$supplier.name',
-          totalPOs: { $sum: 1 },
-          totalValue: { $sum: '$totalAmount' },
-          completedPOs: {
-            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
-          },
-          cancelledPOs: {
-            $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] },
-          },
-          avgDeliveryDays: {
-            $avg: {
-              $cond: [
-                { $and: ['$sentDate', '$expectedDeliveryDate'] },
-                { $divide: [{ $subtract: ['$expectedDeliveryDate', '$sentDate'] }, 1000 * 60 * 60 * 24] },
-                null,
-              ],
-            },
-          },
-        },
+    const pos = await prisma.purchaseOrder.findMany({
+      where: { companyId: company_id },
+      select: {
+        supplier: true,
+        status: true,
+        totalAmount: true,
+        sentDate: true,
+        expectedDeliveryDate: true,
       },
-      { $sort: { totalValue: -1 } },
-    ]);
+      orderBy: { totalAmount: 'desc' },
+    });
 
-    res.json(supplierStats.map(stat => ({
-      supplierName: stat._id,
+    const grouped = new Map<string, any>();
+    for (const po of pos) {
+      const supplierName = (po.supplier as any)?.name || 'Unknown';
+      const entry = grouped.get(supplierName) || {
+        supplierName,
+        totalPOs: 0,
+        totalValue: 0,
+        completedPOs: 0,
+        cancelledPOs: 0,
+        deliveryDays: [] as number[],
+      };
+      entry.totalPOs += 1;
+      entry.totalValue += Number(po.totalAmount || 0);
+      if (String(po.status).toUpperCase() === 'COMPLETED') entry.completedPOs += 1;
+      if (String(po.status).toUpperCase() === 'CANCELLED') entry.cancelledPOs += 1;
+      if (po.sentDate && po.expectedDeliveryDate) {
+        const days = Math.round((new Date(po.expectedDeliveryDate).getTime() - new Date(po.sentDate).getTime()) / (1000 * 60 * 60 * 24));
+        entry.deliveryDays.push(days);
+      }
+      grouped.set(supplierName, entry);
+    }
+
+    const supplierStats = Array.from(grouped.values()).map((stat: any) => ({
+      supplierName: stat.supplierName,
       totalPOs: stat.totalPOs,
       totalValue: stat.totalValue,
       completedPOs: stat.completedPOs,
       cancelledPOs: stat.cancelledPOs,
       completionRate: stat.totalPOs > 0 ? (stat.completedPOs / stat.totalPOs * 100).toFixed(1) : '0',
-      avgDeliveryDays: stat.avgDeliveryDays ? stat.avgDeliveryDays.toFixed(1) : null,
-    })));
+      avgDeliveryDays: stat.deliveryDays.length > 0 ? (stat.deliveryDays.reduce((sum: number, day: number) => sum + day, 0) / stat.deliveryDays.length).toFixed(1) : null,
+    })).sort((a, b) => b.totalValue - a.totalValue);
+
+    res.json(supplierStats);
   } catch (error) {
     console.error('Get supplier report error:', error);
     res.status(500).json({ error: 'Failed to fetch supplier report' });
@@ -922,26 +796,22 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
     const company_id = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    const po = await PurchaseOrder.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      company_id,
-    }).populate('site_id', 'name location');
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: idStr },
+      include: { site: { select: { name: true, location: true } } },
+    });
 
-    if (!po) {
+    if (!po || po.companyId !== company_id) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
 
-    // Check site access for site managers
-    if (req.user!.role === UserRole.SITE_MANAGER) {
-      const siteIdStr = (po.site_id as any)?._id?.toString() || po.site_id.toString();
-      if (!req.assignedSiteIds?.includes(siteIdStr)) {
-        res.status(403).json({ error: 'Access denied to this purchase order' });
-        return;
-      }
+    if (req.user!.role === UserRole.SITE_MANAGER && !req.assignedSiteIds?.includes(po.siteId)) {
+      res.status(403).json({ error: 'Access denied to this purchase order' });
+      return;
     }
 
-    // Generate HTML for PDF
+    const items = Array.isArray(po.items) ? (po.items as any[]) : [];
     const html = `
 <!DOCTYPE html>
 <html>
@@ -969,12 +839,12 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
     .total-amount { font-size: 18px; font-weight: bold; margin-top: 10px; }
     .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #666; font-size: 12px; }
     .status { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; }
-    .status-draft { background: #e5e7eb; }
-    .status-sent { background: #dbeafe; color: #1e40af; }
-    .status-partial { background: #fef3c7; color: #92400e; }
-    .status-received { background: #d1fae5; color: #065f46; }
-    .status-completed { background: #e0e7ff; color: #3730a3; }
-    .status-cancelled { background: #fee2e2; color: #991b1b; }
+    .status-DRAFT { background: #e5e7eb; }
+    .status-SENT { background: #dbeafe; color: #1e40af; }
+    .status-PARTIAL { background: #fef3c7; color: #92400e; }
+    .status-RECEIVED { background: #d1fae5; color: #065f46; }
+    .status-COMPLETED { background: #e0e7ff; color: #3730a3; }
+    .status-CANCELLED { background: #fee2e2; color: #991b1b; }
     @media print {
       body { margin: 20px; }
       .no-print { display: none; }
@@ -985,23 +855,23 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
   <div class="header">
     <h1>PURCHASE ORDER</h1>
     <p style="font-size: 20px; margin-top: 10px;">${po.poNumber}</p>
-    <span class="status status-${po.status}">${po.status.toUpperCase()}</span>
+    <span class="status status-${po.status}">${String(po.status).toUpperCase()}</span>
   </div>
 
   <div class="section">
     <div class="info-grid">
       <div class="info-block">
         <div class="section-title">Supplier</div>
-        <p><span class="value">${po.supplier.name}</span></p>
-        ${po.supplier.contactPerson ? `<p>${po.supplier.contactPerson}</p>` : ''}
-        ${po.supplier.email ? `<p>${po.supplier.email}</p>` : ''}
-        ${po.supplier.phone ? `<p>${po.supplier.phone}</p>` : ''}
-        ${po.supplier.address ? `<p>${po.supplier.address}</p>` : ''}
+        <p><span class="value">${(po.supplier as any)?.name || ''}</span></p>
+        ${(po.supplier as any)?.contactPerson ? `<p>${(po.supplier as any).contactPerson}</p>` : ''}
+        ${(po.supplier as any)?.email ? `<p>${(po.supplier as any).email}</p>` : ''}
+        ${(po.supplier as any)?.phone ? `<p>${(po.supplier as any).phone}</p>` : ''}
+        ${(po.supplier as any)?.address ? `<p>${(po.supplier as any).address}</p>` : ''}
       </div>
       <div class="info-block">
         <div class="section-title">Delivery Information</div>
-        <p><span class="label">Site:</span> <span class="value">${(po.site_id as any)?.name || 'Unknown'}</span></p>
-        ${(po.site_id as any)?.location ? `<p><span class="label">Location:</span> ${(po.site_id as any).location}</p>` : ''}
+        <p><span class="label">Site:</span> <span class="value">${po.site?.name || 'Unknown'}</span></p>
+        ${po.site?.location ? `<p><span class="label">Location:</span> ${po.site.location}</p>` : ''}
         ${po.sentDate ? `<p><span class="label">Sent Date:</span> ${new Date(po.sentDate).toLocaleDateString()}</p>` : ''}
         ${po.expectedDeliveryDate ? `<p><span class="label">Expected Delivery:</span> ${new Date(po.expectedDeliveryDate).toLocaleDateString()}</p>` : ''}
       </div>
@@ -1023,15 +893,15 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
         </tr>
       </thead>
       <tbody>
-        ${po.items.map((item, index) => `
+        ${items.map((item: any, index: number) => `
         <tr>
           <td>${index + 1}</td>
           <td><strong>${item.materialName}</strong></td>
           <td>${item.description || '-'}</td>
           <td class="text-right">${item.quantityOrdered}</td>
           <td class="text-right">${item.unit}</td>
-          <td class="text-right">$${item.unitPrice.toFixed(2)}</td>
-          <td class="text-right">$${item.totalPrice.toFixed(2)}</td>
+          <td class="text-right">$${Number(item.unitPrice || 0).toFixed(2)}</td>
+          <td class="text-right">$${Number(item.totalPrice || 0).toFixed(2)}</td>
         </tr>
         `).join('')}
       </tbody>
@@ -1040,15 +910,15 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
     <div class="totals">
       <div class="totals-row">
         <span>Subtotal:</span>
-        <span>$${po.subTotal.toFixed(2)}</span>
+        <span>$${Number(po.subTotal || 0).toFixed(2)}</span>
       </div>
       <div class="totals-row">
         <span>Tax (${po.taxRate}%):</span>
-        <span>$${po.taxAmount.toFixed(2)}</span>
+        <span>$${Number(po.taxAmount || 0).toFixed(2)}</span>
       </div>
       <div class="totals-row total-amount">
         <span>TOTAL:</span>
-        <span>$${po.totalAmount.toFixed(2)}</span>
+        <span>$${Number(po.totalAmount || 0).toFixed(2)}</span>
       </div>
     </div>
   </div>
@@ -1093,39 +963,40 @@ router.get('/reports/pending', authenticateToken, async (req, res): Promise<void
   try {
     const company_id = req.user!.company_id;
 
-    // Site filter for site managers
     let siteFilter: any = {};
     if (req.user!.role === UserRole.SITE_MANAGER) {
       if (!req.assignedSiteIds || req.assignedSiteIds.length === 0) {
         res.json([]);
         return;
       }
-      const assignedIds = req.assignedSiteIds
-        .filter(id => mongoose.Types.ObjectId.isValid(id))
-        .map(id => new mongoose.Types.ObjectId(id));
-      siteFilter = { site_id: { $in: assignedIds } };
+      siteFilter = { siteId: { in: req.assignedSiteIds } };
     }
 
-    const pending = await PurchaseOrder.find({
-      company_id,
-      ...siteFilter,
-      status: { $in: ['sent', 'partial'] },
-    })
-      .sort({ expectedDeliveryDate: 1 })
-      .populate('site_id', 'name');
+    const pending = await prisma.purchaseOrder.findMany({
+      where: {
+        companyId: company_id,
+        ...siteFilter,
+        status: { in: ['SENT', 'PARTIAL'] as any },
+      },
+      orderBy: { expectedDeliveryDate: 'asc' },
+      include: { site: { select: { name: true } } },
+    });
 
-    res.json(pending.map(po => ({
-      id: po._id.toString(),
-      poNumber: po.poNumber,
-      supplier: po.supplier,
-      site: (po.site_id as any)?.name,
-      status: po.status,
-      totalAmount: po.totalAmount,
-      itemsPending: po.items.reduce((sum, item) => sum + (item.quantityOrdered - item.quantityReceived), 0),
-      totalItems: po.items.reduce((sum, item) => sum + item.quantityOrdered, 0),
-      sentDate: po.sentDate,
-      expectedDeliveryDate: po.expectedDeliveryDate,
-    })));
+    res.json(pending.map(po => {
+      const items = Array.isArray(po.items) ? (po.items as any[]) : [];
+      return {
+        id: po.id,
+        poNumber: po.poNumber,
+        supplier: po.supplier,
+        site: po.site?.name,
+        status: toApiStatus(po.status),
+        totalAmount: po.totalAmount,
+        itemsPending: items.reduce((sum, item) => sum + ((item.quantityOrdered || 0) - (item.quantityReceived || 0)), 0),
+        totalItems: items.reduce((sum, item) => sum + (item.quantityOrdered || 0), 0),
+        sentDate: po.sentDate,
+        expectedDeliveryDate: po.expectedDeliveryDate,
+      };
+    }));
   } catch (error) {
     console.error('Get pending report error:', error);
     res.status(500).json({ error: 'Failed to fetch pending deliveries report' });

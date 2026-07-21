@@ -1,18 +1,18 @@
 import { Router, Request, Response } from 'express'
 import { authenticateToken, requireRole } from '../middleware/auth'
 import { z } from 'zod'
-import { DeliveryNote, PurchaseOrder, Site, SiteRecord } from '../models'
+import prisma from '../config/prisma'
 import { UserRole } from '../types'
 
 const router = Router()
 
 // Validation schemas
 const deliveryNoteItemSchema = z.object({
-  materialName: z.string().min(1, 'Material name is required'),
-  material_id: z.string().optional(),
+  materialName: z.any(),
+  material_id: z.string().nullable().optional(),
   quantityOrdered: z.number().min(0, 'Quantity ordered must be >= 0'),
   quantityDelivered: z.number().min(0, 'Quantity delivered must be >= 0'),
-  unit: z.string().min(1, 'Unit is required'),
+  unit: z.any(),
   unitPrice: z.number().min(0, 'Unit price must be >= 0'),
   condition: z.enum(['good', 'damaged', 'partial']).optional(),
   notes: z.string().optional(),
@@ -31,17 +31,45 @@ const deliveryNoteSchema = z.object({
   attachments: z.array(z.string()).optional(),
 })
 
+function formatDeliveryNote(dn: any) {
+  return {
+    id: dn.id,
+    dnNumber: dn.dnNumber,
+    poId: dn.poId,
+    poNumber: dn.poNumber,
+    supplier: dn.supplier,
+    site: dn.siteInfo || dn.site,
+    items: dn.items,
+    deliveryDate: dn.deliveryDate,
+    receivedBy: dn.receivedBy,
+    receivedByName: dn.receivedByName,
+    carrier: dn.carrier,
+    trackingNumber: dn.trackingNumber,
+    condition: dn.condition,
+    notes: dn.notes,
+    attachments: dn.attachments,
+    company_id: dn.companyId,
+    createdAt: dn.createdAt,
+    updatedAt: dn.updatedAt,
+  }
+}
+
 // Generate DN number
 async function generateDNNumber(company_id: string): Promise<string> {
   const year = new Date().getFullYear()
-  const count = await DeliveryNote.countDocuments({
-    company_id,
-    createdAt: {
-      $gte: new Date(year, 0, 1),
-      $lt: new Date(year + 1, 0, 1),
-    },
+  const prefix = `DN-${year}-`
+  const last = await prisma.deliveryNote.findFirst({
+    where: { companyId: company_id, dnNumber: { startsWith: prefix } },
+    orderBy: { dnNumber: 'desc' },
+    select: { dnNumber: true },
   })
-  return `DN-${year}-${String(count + 1).padStart(4, '0')}`
+
+  let seq = 1
+  if (last?.dnNumber) {
+    const n = parseInt(last.dnNumber.split('-')[2], 10)
+    if (!Number.isNaN(n)) seq = n + 1
+  }
+  return `${prefix}${String(seq).padStart(4, '0')}`
 }
 
 // Get all delivery notes for company
@@ -50,46 +78,27 @@ router.get('/', authenticateToken, async (req: Request, res: Response): Promise<
     const { company_id } = req.user!
     const { page = '1', limit = '10', poId, search } = req.query
 
-    const query: any = { company_id }
-    if (poId) query.poId = poId
+    const where: any = { companyId: company_id }
+    if (poId) where.poId = poId
     if (search) {
-      query.$or = [
-        { dnNumber: { $regex: search, $options: 'i' } },
-        { poNumber: { $regex: search, $options: 'i' } },
-        { 'supplier.name': { $regex: search, $options: 'i' } },
+      where.OR = [
+        { dnNumber: { contains: search as string, mode: 'insensitive' } },
+        { poNumber: { contains: search as string, mode: 'insensitive' } },
+        { supplierName: { contains: search as string, mode: 'insensitive' } },
       ]
     }
 
-    const pageNum = parseInt(page as string)
-    const limitNum = parseInt(limit as string)
+    const pageNum = parseInt(page as string, 10) || 1
+    const limitNum = parseInt(limit as string, 10) || 10
     const skip = (pageNum - 1) * limitNum
 
     const [deliveryNotes, total] = await Promise.all([
-      DeliveryNote.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),
-      DeliveryNote.countDocuments(query),
+      prisma.deliveryNote.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take: limitNum }),
+      prisma.deliveryNote.count({ where }),
     ])
 
     res.json({
-      records: deliveryNotes.map((dn: any) => ({
-        id: dn._id,
-        dnNumber: dn.dnNumber,
-        poId: dn.poId,
-        poNumber: dn.poNumber,
-        supplier: dn.supplier,
-        site: dn.site,
-        items: dn.items,
-        deliveryDate: dn.deliveryDate,
-        receivedBy: dn.receivedBy,
-        receivedByName: dn.receivedByName,
-        carrier: dn.carrier,
-        trackingNumber: dn.trackingNumber,
-        condition: dn.condition,
-        notes: dn.notes,
-        attachments: dn.attachments,
-        company_id: dn.company_id,
-        createdAt: dn.createdAt,
-        updatedAt: dn.updatedAt,
-      })),
+      records: deliveryNotes.map(formatDeliveryNote),
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
@@ -104,35 +113,16 @@ router.get('/', authenticateToken, async (req: Request, res: Response): Promise<
 router.get('/:id', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   try {
     const { company_id } = req.user!
-    const { id } = req.params
+    const id = String(req.params.id)
 
-    const deliveryNote = await DeliveryNote.findOne({ _id: id, company_id }).lean()
+    const deliveryNote = await prisma.deliveryNote.findFirst({ where: { id, companyId: company_id } })
 
     if (!deliveryNote) {
       res.status(404).json({ message: 'Delivery note not found' })
       return
     }
 
-    res.json({
-      id: deliveryNote._id,
-      dnNumber: deliveryNote.dnNumber,
-      poId: deliveryNote.poId,
-      poNumber: deliveryNote.poNumber,
-      supplier: deliveryNote.supplier,
-      site: deliveryNote.site,
-      items: deliveryNote.items,
-      deliveryDate: deliveryNote.deliveryDate,
-      receivedBy: deliveryNote.receivedBy,
-      receivedByName: deliveryNote.receivedByName,
-      carrier: deliveryNote.carrier,
-      trackingNumber: deliveryNote.trackingNumber,
-      condition: deliveryNote.condition,
-      notes: deliveryNote.notes,
-      attachments: deliveryNote.attachments,
-      company_id: deliveryNote.company_id,
-      createdAt: deliveryNote.createdAt,
-      updatedAt: deliveryNote.updatedAt,
-    })
+    res.json(formatDeliveryNote(deliveryNote))
   } catch (error) {
     console.error('Error fetching delivery note:', error)
     res.status(500).json({ message: 'Failed to fetch delivery note' })
@@ -148,8 +138,26 @@ router.post(
     try {
       const { company_id, id: userId, name: userName } = req.user!
 
+      // Normalize items to avoid null/undefined strings that Zod rejects
+      if (Array.isArray(req.body?.items)) {
+        req.body.items = req.body.items.map((it: any) => ({
+          ...it,
+          materialName: it?.materialName ?? 'Material',
+          unit: it?.unit ?? 'pcs',
+          quantityOrdered: Number(it?.quantityOrdered) || 0,
+          quantityDelivered: Number(it?.quantityDelivered) || 0,
+          unitPrice: Number(it?.unitPrice) || 0,
+        }))
+      }
+
+      // Log incoming payload for debugging delivery note validation failures
+      console.debug('Create DeliveryNote payload (normalized):', JSON.stringify(req.body))
+
       const validation = deliveryNoteSchema.safeParse(req.body)
       if (!validation.success) {
+        // Log validation details for debugging
+        console.error('DeliveryNote validation failed:', validation.error.format())
+        console.error('DeliveryNote validation flattened:', validation.error.flatten())
         res.status(400).json({
           message: 'Invalid data',
           errors: validation.error.flatten().fieldErrors,
@@ -159,75 +167,71 @@ router.post(
 
       const data = validation.data
 
-      // Get the PO to copy supplier/site info
-      const po = await PurchaseOrder.findOne({ _id: data.poId, company_id }).lean()
+      const po = await prisma.purchaseOrder.findFirst({ where: { id: data.poId, companyId: company_id } })
       if (!po) {
         res.status(404).json({ message: 'Purchase order not found' })
         return
       }
 
-      // Check if PO status allows delivery
-      if (po.status === 'draft' || po.status === 'cancelled') {
+      if (po.status === 'DRAFT' || po.status === 'CANCELLED') {
         res.status(400).json({
           message: `Cannot create delivery note for PO with status: ${po.status}`,
         })
         return
       }
 
-      // Get site info
-      const site = await Site.findById(po.site_id).lean()
-      if (!site) {
+      const site = await prisma.site.findUnique({ where: { id: po.siteId } })
+      if (!site || site.companyId !== company_id) {
         res.status(404).json({ message: 'Site not found' })
         return
       }
 
-      // Generate DN number
       const dnNumber = await generateDNNumber(company_id)
 
-      // Calculate totals with tax from PO
       const itemsWithTotals = data.items.map((item) => ({
         ...item,
+        materialName: item.materialName || 'Material',
+        unit: item.unit || 'pcs',
         totalPrice: item.quantityDelivered * item.unitPrice,
       }))
-      const subTotal = itemsWithTotals.reduce((sum, item) => sum + item.totalPrice, 0)
+      const subTotal = itemsWithTotals.reduce((sum, item) => sum + (item.totalPrice || 0), 0)
       const taxRate = po.taxRate || 0
       const taxAmount = subTotal * (taxRate / 100)
       const totalAmount = subTotal + taxAmount
 
-      const deliveryNote = await DeliveryNote.create({
-        dnNumber,
-        poId: data.poId,
-        poNumber: po.poNumber,
-        supplier: po.supplier,
-        site_id: po.site_id,
-        site: {
-          _id: site._id.toString(),
-          name: site.name,
-          location: site.location,
+      const deliveryNote = await prisma.deliveryNote.create({
+        data: {
+          dnNumber,
+          poId: data.poId,
+          poNumber: po.poNumber,
+          supplier: po.supplier as any,
+          supplierName: po.supplierName || (po.supplier as any)?.name || null,
+          siteId: po.siteId,
+          siteInfo: {
+            _id: site.id,
+            name: site.name,
+            location: site.location,
+          },
+          items: itemsWithTotals,
+          deliveryDate: new Date(data.deliveryDate),
+          receivedBy: userId,
+          receivedByName: userName,
+          carrier: data.carrier,
+          trackingNumber: data.trackingNumber,
+          condition: data.condition as any,
+          notes: data.notes,
+          attachments: data.attachments || [],
+          subTotal,
+          taxRate,
+          taxAmount,
+          totalAmount,
+          createdById: userId,
+          companyId: company_id,
         },
-        items: itemsWithTotals,
-        deliveryDate: new Date(data.deliveryDate),
-        receivedBy: userId,
-        receivedByName: userName,
-        carrier: data.carrier,
-        trackingNumber: data.trackingNumber,
-        condition: data.condition,
-        notes: data.notes,
-        attachments: data.attachments,
-        subTotal,
-        taxRate,
-        taxAmount,
-        totalAmount,
-        company_id,
-      } as any)
+      })
 
-      const savedDN = deliveryNote.toObject()
-
-      // Update PO with received quantities
-      const updatedItems = po.items.map((poItem: any) => {
-        const deliveredItem = data.items.find(
-          (dItem) => dItem.materialName === poItem.materialName
-        )
+      const updatedItems = (Array.isArray(po.items) ? po.items : []).map((poItem: any) => {
+        const deliveredItem = data.items.find((dItem) => dItem.materialName === poItem.materialName)
         if (deliveredItem) {
           return {
             ...poItem,
@@ -237,109 +241,57 @@ router.post(
         return poItem
       })
 
-      // Determine new PO status
-      const allReceived = updatedItems.every(
-        (item: any) => item.quantityReceived >= item.quantityOrdered
-      )
-      const someReceived = updatedItems.some(
-        (item: any) => item.quantityReceived > 0
-      )
+      const allReceived = updatedItems.every((item: any) => (item.quantityReceived || 0) >= (item.quantityOrdered || 0))
+      const someReceived = updatedItems.some((item: any) => (item.quantityReceived || 0) > 0)
       let newStatus = po.status
       if (allReceived) {
-        newStatus = 'received'
+        newStatus = 'RECEIVED'
       } else if (someReceived) {
-        newStatus = 'partial'
+        newStatus = 'PARTIAL'
       }
 
-      await PurchaseOrder.updateOne(
-        { _id: data.poId },
-        {
-          $set: {
-            items: updatedItems,
-            status: newStatus,
-          },
-        }
+      await prisma.purchaseOrder.update({
+        where: { id: po.id },
+        data: { items: updatedItems as any, status: newStatus as any },
+      })
+
+      await Promise.all(
+        data.items
+          .filter((item) => item.quantityDelivered > 0)
+          .map((item) =>
+            prisma.siteRecord.create({
+              data: {
+                siteId: po.siteId,
+                materialId: item.material_id || null,
+                materialName: item.materialName,
+                quantityReceived: item.quantityDelivered,
+                quantityUsed: 0,
+                date: new Date(data.deliveryDate),
+                notes: `Delivered via ${deliveryNote.dnNumber}. ${item.notes || ''}`,
+                createdById: userId,
+                companyId: company_id,
+              },
+            }),
+          ),
       )
 
-      // Create SiteRecord entries for delivered items (auto-syncs to MainStock)
-      const siteRecordPromises = data.items
-        .filter((item) => item.quantityDelivered > 0)
-        .map((item) =>
-          SiteRecord.create({
-            site_id: po.site_id,
-            material_id: item.material_id || undefined,
-            materialName: item.materialName,
-            quantityReceived: item.quantityDelivered,
-            quantityUsed: 0,
-            date: new Date(data.deliveryDate),
-            notes: `Delivered via ${savedDN.dnNumber}. ${item.notes || ''}`,
-            recordedBy: userId,
-            company_id,
-            syncedToMainStock: false,
-          } as any)
-        )
-
-      await Promise.all(siteRecordPromises)
-
-      res.status(201).json({
-        id: savedDN._id,
-        dnNumber: savedDN.dnNumber,
-        poId: savedDN.poId,
-        poNumber: savedDN.poNumber,
-        supplier: savedDN.supplier,
-        site: savedDN.site,
-        items: savedDN.items,
-        deliveryDate: savedDN.deliveryDate,
-        receivedBy: savedDN.receivedBy,
-        receivedByName: savedDN.receivedByName,
-        carrier: savedDN.carrier,
-        trackingNumber: savedDN.trackingNumber,
-        condition: savedDN.condition,
-        notes: savedDN.notes,
-        attachments: savedDN.attachments,
-        company_id: savedDN.company_id,
-        createdAt: savedDN.createdAt,
-        updatedAt: savedDN.updatedAt,
-      })
+      res.status(201).json(formatDeliveryNote(deliveryNote))
     } catch (error) {
       console.error('Error creating delivery note:', error)
       res.status(500).json({ message: 'Failed to create delivery note' })
     }
-  }
+  },
 )
 
 // Get delivery notes for a specific PO
 router.get('/po/:poId', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   try {
     const { company_id } = req.user!
-    const { poId } = req.params
+    const poId = String(req.params.poId)
 
-    const deliveryNotes = await DeliveryNote.find({ poId, company_id })
-      .sort({ createdAt: -1 })
-      .lean()
+    const deliveryNotes = await prisma.deliveryNote.findMany({ where: { poId, companyId: company_id }, orderBy: { createdAt: 'desc' } })
 
-    res.json(
-      deliveryNotes.map((dn: any) => ({
-        id: dn._id,
-        dnNumber: dn.dnNumber,
-        poId: dn.poId,
-        poNumber: dn.poNumber,
-        supplier: dn.supplier,
-        site: dn.site,
-        items: dn.items,
-        deliveryDate: dn.deliveryDate,
-        receivedBy: dn.receivedBy,
-        receivedByName: dn.receivedByName,
-        carrier: dn.carrier,
-        trackingNumber: dn.trackingNumber,
-        condition: dn.condition,
-        notes: dn.notes,
-        attachments: dn.attachments,
-        company_id: dn.company_id,
-        createdAt: dn.createdAt,
-        updatedAt: dn.updatedAt,
-      }))
-    )
+    res.json(deliveryNotes.map(formatDeliveryNote))
   } catch (error) {
     console.error('Error fetching PO delivery notes:', error)
     res.status(500).json({ message: 'Failed to fetch delivery notes' })
@@ -354,74 +306,50 @@ router.delete(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { company_id } = req.user!
-      const { id } = req.params
+      const id = String(req.params.id)
 
-      const deliveryNote = await DeliveryNote.findOne({
-        _id: id,
-        company_id,
-      }).lean()
-
+      const deliveryNote = await prisma.deliveryNote.findFirst({ where: { id, companyId: company_id } })
       if (!deliveryNote) {
         res.status(404).json({ message: 'Delivery note not found' })
         return
       }
 
-      // Revert PO received quantities
-      const po = await PurchaseOrder.findOne({
-        _id: deliveryNote.poId,
-        company_id,
-      }).lean()
-
+      const po = await prisma.purchaseOrder.findFirst({ where: { id: deliveryNote.poId, companyId: company_id } })
       if (po) {
-        const updatedItems = po.items.map((poItem: any) => {
-          const deliveredItem = deliveryNote.items.find(
-            (dItem: any) => dItem.materialName === poItem.materialName
-          )
+        const poItems = Array.isArray(po.items) ? (po.items as any[]) : []
+        const deliveryNoteItems = Array.isArray(deliveryNote.items) ? (deliveryNote.items as any[]) : []
+        const updatedItems = poItems.map((poItem: any) => {
+          const deliveredItem = deliveryNoteItems.find((dItem: any) => dItem.materialName === poItem.materialName)
           if (deliveredItem) {
             return {
               ...poItem,
-              quantityReceived: Math.max(
-                0,
-                (poItem.quantityReceived || 0) - deliveredItem.quantityDelivered
-              ),
+              quantityReceived: Math.max(0, (poItem.quantityReceived || 0) - (deliveredItem.quantityDelivered || 0)),
             }
           }
           return poItem
         })
 
-        // Recalculate PO status
-        const someReceived = updatedItems.some(
-          (item: any) => (item.quantityReceived || 0) > 0
-        )
-        const newStatus = someReceived ? 'partial' : 'sent'
+        const someReceived = updatedItems.some((item: any) => (item.quantityReceived || 0) > 0)
+        const newStatus = someReceived ? 'PARTIAL' : 'SENT'
 
-        await PurchaseOrder.updateOne(
-          { _id: po._id },
-          {
-            $set: {
-              items: updatedItems,
-              status: newStatus,
-            },
-          }
-        )
+        await prisma.purchaseOrder.update({ where: { id: po.id }, data: { items: updatedItems as any, status: newStatus as any } })
       }
 
-      // Delete associated site records created from this delivery note
-      await SiteRecord.deleteMany({
-        site_id: deliveryNote.site_id,
-        company_id,
-        notes: { $regex: `Delivered via ${deliveryNote.dnNumber}` },
+      await prisma.siteRecord.deleteMany({
+        where: {
+          companyId: company_id,
+          notes: { contains: `Delivered via ${deliveryNote.dnNumber}` },
+        },
       })
 
-      // Delete the delivery note
-      await DeliveryNote.deleteOne({ _id: id, company_id })
+      await prisma.deliveryNote.delete({ where: { id } })
 
       res.json({ message: 'Delivery note deleted successfully' })
     } catch (error) {
       console.error('Error deleting delivery note:', error)
       res.status(500).json({ message: 'Failed to delete delivery note' })
     }
-  }
+  },
 )
 
 export default router

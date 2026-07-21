@@ -1,252 +1,142 @@
-import mongoose from 'mongoose';
-import { MainStockRecord } from '../models/MainStockRecord';
-import { StockMovement } from '../models/StockMovement';
+import type { MovementType } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import prisma from '../config/prisma';
 
-/**
- * UsedMaterialsView - Aggregates total quantity used per material
- * Groups MainStockRecords by material and sums quantityUsed across all records
- * filtered by company
- */
-export async function getUsedMaterialsView(company_id: string) {
-  const pipeline = [
-    {
-      $match: {
-        company_id,
-        quantityUsed: { $gt: 0 },
-      },
-    },
-    {
-      $group: {
-        _id: '$materialName',
-        material_id: { $first: '$material_id' },
-        totalQuantityUsed: { $sum: '$quantityUsed' },
-        avgPrice: { $avg: '$price' },
-        totalValue: {
-          $sum: {
-            $multiply: ['$quantityUsed', { $ifNull: ['$price', 0] }],
-          },
-        },
-        recordCount: { $sum: 1 },
-        siteBreakdown: {
-          $push: {
-            site_id: '$site_id',
-            source: '$source',
-            quantityUsed: '$quantityUsed',
-          },
-        },
-        lastRecord: { $last: '$$ROOT' },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        materialName: '$_id',
-        material_id: 1,
-        totalQuantityUsed: 1,
-        avgPrice: 1,
-        totalValue: 1,
-        recordCount: 1,
-        siteBreakdown: 1,
-        lastRecordId: '$lastRecord._id',
-        updatedAt: new Date(),
-      },
-    },
-    { $sort: { materialName: 1 as const } },
-  ];
-
-  return MainStockRecord.aggregate(pipeline);
+function buildFilters(material?: string, startDate?: string, endDate?: string) {
+  const clauses: Prisma.Sql[] = [];
+  if (material) {
+    clauses.push(Prisma.sql`AND "materialName" ILIKE ${`%${material}%`}`);
+  }
+  if (startDate) {
+    clauses.push(Prisma.sql`AND "date" >= ${new Date(startDate)}`);
+  }
+  if (endDate) {
+    clauses.push(Prisma.sql`AND "date" <= ${new Date(endDate)}`);
+  }
+  return clauses.length ? Prisma.join(clauses, ' ') : Prisma.empty;
 }
 
-/**
- * RemainingMaterialsView - Computes quantityReceived - quantityUsed per material
- * with total value. Includes price valuation.
- */
-export async function getRemainingMaterialsView(company_id: string) {
-  const pipeline = [
-    {
-      $match: {
-        company_id,
-      },
-    },
-    {
-      $group: {
-        _id: '$materialName',
-        material_id: { $first: '$material_id' },
-        totalReceived: { $sum: '$quantityReceived' },
-        totalUsed: { $sum: '$quantityUsed' },
-        remainingQuantity: {
-          $sum: { $subtract: ['$quantityReceived', '$quantityUsed'] },
-        },
-        avgPrice: { $avg: '$price' },
-        remainingValue: {
-          $sum: {
-            $multiply: [
-              { $subtract: ['$quantityReceived', '$quantityUsed'] },
-              { $ifNull: ['$price', 0] },
-            ],
-          },
-        },
-        siteBreakdown: {
-          $push: {
-            site_id: '$site_id',
-            source: '$source',
-            received: '$quantityReceived',
-            used: '$quantityUsed',
-            remaining: { $subtract: ['$quantityReceived', '$quantityUsed'] },
-          },
-        },
-        lastRecord: { $last: '$$ROOT' },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        materialName: '$_id',
-        material_id: 1,
-        totalReceived: 1,
-        totalUsed: 1,
-        remainingQuantity: 1,
-        avgPrice: 1,
-        remainingValue: 1,
-        siteBreakdown: 1,
-        lastRecordId: '$lastRecord._id',
-        updatedAt: new Date(),
-      },
-    },
-    { $sort: { materialName: 1 as const } },
-  ];
+function normalizeViewRow(row: any) {
+  const toNumber = (value: unknown) => {
+    if (value == null) return 0;
+    if (typeof value === 'bigint') return Number(value);
+    if (typeof value === 'object' && value !== null && 'toNumber' in (value as object)) {
+      return Number((value as { toNumber: () => number }).toNumber());
+    }
+    return Number(value);
+  };
 
-  return MainStockRecord.aggregate(pipeline);
+  return {
+    ...row,
+    material_id: row.material_id ?? undefined,
+    totalQuantityUsed: toNumber(row.totalQuantityUsed),
+    totalReceived: toNumber(row.totalReceived),
+    totalUsed: toNumber(row.totalUsed),
+    remainingQuantity: toNumber(row.remainingQuantity),
+    avgPrice: toNumber(row.avgPrice),
+    totalValue: toNumber(row.totalValue),
+    remainingValue: toNumber(row.remainingValue),
+    recordCount: toNumber(row.recordCount),
+    siteBreakdown: Array.isArray(row.siteBreakdown) ? row.siteBreakdown : [],
+  };
 }
 
-/**
- * Get single material used view
- */
+export async function getUsedMaterialsView(company_id: string, material?: string, startDate?: string, endDate?: string) {
+  const filters = buildFilters(material, startDate, endDate);
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT
+      "materialName",
+      MIN("materialId") AS material_id,
+      SUM("quantityUsed") AS "totalQuantityUsed",
+      AVG("price") AS "avgPrice",
+      SUM("quantityUsed" * COALESCE("price", 0)) AS "totalValue",
+      COUNT(*) AS "recordCount",
+      JSON_AGG(JSON_BUILD_OBJECT('site_id', "siteId", 'source', LOWER("source"::text), 'quantityUsed', "quantityUsed")) AS "siteBreakdown"
+    FROM "MainStockRecord"
+    WHERE "companyId" = ${company_id} AND "quantityUsed" > 0
+    ${filters}
+    GROUP BY "materialName"
+    ORDER BY "totalQuantityUsed" DESC
+  `;
+  return rows.map(normalizeViewRow);
+}
+
+export async function getRemainingMaterialsView(company_id: string, material?: string, startDate?: string, endDate?: string) {
+  const filters = buildFilters(material, startDate, endDate);
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT
+      "materialName",
+      MIN("materialId") AS material_id,
+      SUM("quantityReceived") AS "totalReceived",
+      SUM("quantityUsed") AS "totalUsed",
+      SUM("quantityReceived" - "quantityUsed") AS "remainingQuantity",
+      AVG("price") AS "avgPrice",
+      SUM(("quantityReceived" - "quantityUsed") * COALESCE("price", 0)) AS "remainingValue",
+      JSON_AGG(JSON_BUILD_OBJECT(
+        'site_id', "siteId",
+        'source', LOWER("source"::text),
+        'quantityReceived', "quantityReceived",
+        'quantityUsed', "quantityUsed",
+        'remaining', "quantityReceived" - "quantityUsed"
+      )) AS "siteBreakdown"
+    FROM "MainStockRecord"
+    WHERE "companyId" = ${company_id}
+    ${filters}
+    GROUP BY "materialName"
+    ORDER BY "remainingQuantity" DESC
+  `;
+  return rows.map(normalizeViewRow);
+}
+
 export async function getSingleUsedMaterialView(company_id: string, materialName: string) {
-  const pipeline = [
-    {
-      $match: {
-        company_id,
-        materialName: { $regex: new RegExp(`^${materialName}$`, 'i') },
-        quantityUsed: { $gt: 0 },
-      },
-    },
-    {
-      $group: {
-        _id: '$materialName',
-        material_id: { $first: '$material_id' },
-        totalQuantityUsed: { $sum: '$quantityUsed' },
-        avgPrice: { $avg: '$price' },
-        totalValue: {
-          $sum: {
-            $multiply: ['$quantityUsed', { $ifNull: ['$price', 0] }],
-          },
-        },
-        recordCount: { $sum: 1 },
-        siteBreakdown: {
-          $push: {
-            site_id: '$site_id',
-            source: '$source',
-            quantityUsed: '$quantityUsed',
-          },
-        },
-        lastRecord: { $last: '$$ROOT' },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        materialName: '$_id',
-        material_id: 1,
-        totalQuantityUsed: 1,
-        avgPrice: 1,
-        totalValue: 1,
-        recordCount: 1,
-        siteBreakdown: 1,
-        lastRecordId: '$lastRecord._id',
-        updatedAt: new Date(),
-      },
-    },
-  ];
-
-  const result = await MainStockRecord.aggregate(pipeline);
-  return result[0] || null;
+  const results = await prisma.$queryRaw<any[]>`
+    SELECT
+      "materialName",
+      MIN("materialId") AS material_id,
+      SUM("quantityUsed") AS "totalQuantityUsed",
+      AVG("price") AS "avgPrice",
+      SUM("quantityUsed" * COALESCE("price", 0)) AS "totalValue",
+      COUNT(*) AS "recordCount",
+      JSON_AGG(JSON_BUILD_OBJECT('site_id', "siteId", 'source', LOWER("source"::text), 'quantityUsed', "quantityUsed")) AS "siteBreakdown"
+    FROM "MainStockRecord"
+    WHERE "companyId" = ${company_id} AND "quantityUsed" > 0 AND "materialName" ILIKE ${materialName}
+    GROUP BY "materialName"
+  `;
+  return results[0] ? normalizeViewRow(results[0]) : null;
 }
 
-/**
- * Get single material remaining view
- */
 export async function getSingleRemainingMaterialView(company_id: string, materialName: string) {
-  const pipeline = [
-    {
-      $match: {
-        company_id,
-        materialName: { $regex: new RegExp(`^${materialName}$`, 'i') },
-      },
-    },
-    {
-      $group: {
-        _id: '$materialName',
-        material_id: { $first: '$material_id' },
-        totalReceived: { $sum: '$quantityReceived' },
-        totalUsed: { $sum: '$quantityUsed' },
-        remainingQuantity: {
-          $sum: { $subtract: ['$quantityReceived', '$quantityUsed'] },
-        },
-        avgPrice: { $avg: '$price' },
-        remainingValue: {
-          $sum: {
-            $multiply: [
-              { $subtract: ['$quantityReceived', '$quantityUsed'] },
-              { $ifNull: ['$price', 0] },
-            ],
-          },
-        },
-        siteBreakdown: {
-          $push: {
-            site_id: '$site_id',
-            source: '$source',
-            received: '$quantityReceived',
-            used: '$quantityUsed',
-            remaining: { $subtract: ['$quantityReceived', '$quantityUsed'] },
-          },
-        },
-        lastRecord: { $last: '$$ROOT' },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        materialName: '$_id',
-        material_id: 1,
-        totalReceived: 1,
-        totalUsed: 1,
-        remainingQuantity: 1,
-        avgPrice: 1,
-        remainingValue: 1,
-        siteBreakdown: 1,
-        lastRecordId: '$lastRecord._id',
-        updatedAt: new Date(),
-      },
-    },
-  ];
-
-  const result = await MainStockRecord.aggregate(pipeline);
-  return result[0] || null;
+  const results = await prisma.$queryRaw<any[]>`
+    SELECT
+      "materialName",
+      MIN("materialId") AS material_id,
+      SUM("quantityReceived") AS "totalReceived",
+      SUM("quantityUsed") AS "totalUsed",
+      SUM("quantityReceived" - "quantityUsed") AS "remainingQuantity",
+      AVG("price") AS "avgPrice",
+      SUM(("quantityReceived" - "quantityUsed") * COALESCE("price", 0)) AS "remainingValue",
+      JSON_AGG(JSON_BUILD_OBJECT(
+        'site_id', "siteId",
+        'source', LOWER("source"::text),
+        'quantityReceived', "quantityReceived",
+        'quantityUsed', "quantityUsed",
+        'remaining', "quantityReceived" - "quantityUsed"
+      )) AS "siteBreakdown"
+    FROM "MainStockRecord"
+    WHERE "companyId" = ${company_id} AND "materialName" ILIKE ${materialName}
+    GROUP BY "materialName"
+  `;
+  return results[0] ? normalizeViewRow(results[0]) : null;
 }
 
-/**
- * Comprehensive stock summary
- */
 export async function getStockSummary(company_id: string) {
   const [usedMaterials, remainingMaterials, totalRecords, pendingPricing] = await Promise.all([
     getUsedMaterialsView(company_id),
     getRemainingMaterialsView(company_id),
-    MainStockRecord.countDocuments({ company_id }),
-    MainStockRecord.countDocuments({ company_id, status: 'pending_price' }),
+    prisma.mainStockRecord.count({ where: { companyId: company_id } }),
+    prisma.mainStockRecord.count({ where: { companyId: company_id, status: 'PENDING_PRICE' } }),
   ]);
 
-  // Build summary combining both views
   const allMaterials = new Set([
     ...usedMaterials.map((u: any) => u.materialName),
     ...remainingMaterials.map((r: any) => r.materialName),
@@ -273,15 +163,11 @@ export async function getStockSummary(company_id: string) {
   };
 }
 
-/**
- * Service to record stock movement and update derived views
- * This should be called before updating MainStockRecord quantities
- */
 export async function recordStockMovement(data: {
   mainStockRecord_id: string;
   site_id?: string;
   material_id?: string;
-  movementType: string;
+  movementType: MovementType;
   quantity: number;
   previousQuantityUsed: number;
   previousQuantityReceived: number;
@@ -291,15 +177,23 @@ export async function recordStockMovement(data: {
   company_id: string;
   notes?: string;
 }) {
-  // 1. Write StockMovement first
-  const movement = await StockMovement.create({
-    ...data,
-    date: new Date(),
+  const movement = await prisma.stockMovement.create({
+    data: {
+      mainStockRecordId: data.mainStockRecord_id,
+      siteId: data.site_id || null,
+      materialId: data.material_id || null,
+      movementType: data.movementType,
+      quantity: data.quantity,
+      previousQuantityUsed: data.previousQuantityUsed,
+      previousQuantityReceived: data.previousQuantityReceived,
+      newQuantityUsed: data.newQuantityUsed,
+      newQuantityReceived: data.newQuantityReceived,
+      performedById: data.performedBy,
+      companyId: data.company_id,
+      notes: data.notes,
+      date: new Date(),
+    },
   });
-
-  // 2. Views are computed on-demand via aggregation, no separate update needed
-  // The getUsedMaterialsView and getRemainingMaterialsView will reflect
-  // the latest data on next query
 
   return movement;
 }

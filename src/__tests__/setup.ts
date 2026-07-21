@@ -1,23 +1,34 @@
-import { connectDB, disconnectDB, getDB } from '../config/database';
+import prisma from '../config/prisma';
+import { beforeAll, afterAll, afterEach } from '@jest/globals';
 
 beforeAll(async () => {
-  // Connect to test database
-  await connectDB();
+  await prisma.$connect();
 });
 
 afterAll(async () => {
-  await disconnectDB();
+  await prisma.$disconnect();
 });
 
 afterEach(async () => {
-  // Clean up test data after each test
-  const db = getDB();
-  await db.collection('stockMovementLogs').deleteMany({});
-  await db.collection('usedMaterialsView').deleteMany({});
-  await db.collection('remainingMaterialsView').deleteMany({});
-  await db.collection('mainStock').deleteMany({});
-  await db.collection('siteRecords').deleteMany({});
-  await db.collection('siteAssignments').deleteMany({});
-  await db.collection('sites').deleteMany({});
-  await db.collection('users').deleteMany({});
+  await prisma.$executeRawUnsafe(`
+    TRUNCATE TABLE
+      "ActionLog",
+      "Notification",
+      "Invoice",
+      "Quotation",
+      "PurchaseReturn",
+      "DeliveryNote",
+      "PurchaseOrder",
+      "Client",
+      "Supplier",
+      "SiteRecord",
+      "MainStockRecord",
+      "StockMovement",
+      "SiteAssignment",
+      "Site",
+      "Material",
+      "User",
+      "Company"
+    RESTART IDENTITY CASCADE;
+  `);
 });

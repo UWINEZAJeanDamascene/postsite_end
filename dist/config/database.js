@@ -3,7 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.db = exports.client = exports.disconnectDB = exports.getDB = exports.connectDB = void 0;
 const mongodb_1 = require("mongodb");
 const index_1 = require("./index");
-const uri = index_1.config.DATABASE_URL || 'mongodb://localhost:27017/siteSock';
+/** Used only by the one-time Mongo → Postgres legacy migration script. */
+const uri = index_1.config.MONGO_URL || 'mongodb://localhost:27017/siteSock';
 let client;
 let db;
 async function connectDB() {
@@ -12,7 +13,7 @@ async function connectDB() {
     exports.client = client = new mongodb_1.MongoClient(uri);
     await client.connect();
     exports.db = db = client.db();
-    console.log('Connected to MongoDB');
+    console.log('Connected to MongoDB (legacy migration)');
     return db;
 }
 exports.connectDB = connectDB;

@@ -6,30 +6,37 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const auth_1 = require("../utils/auth");
 const auth_2 = require("../middleware/auth");
-const models_1 = require("../models");
-const Company_1 = require("../models/Company");
-const mongoose_1 = __importDefault(require("mongoose"));
+const prisma_1 = __importDefault(require("../config/prisma"));
+const types_1 = require("../types");
+const client_1 = require("@prisma/client");
 const actionLogService_1 = require("../services/actionLogService");
+function toPrismaUserRole(role) {
+    return role.toUpperCase();
+}
+function fromPrismaUserRole(role) {
+    return role.toLowerCase();
+}
 const router = (0, express_1.Router)();
 async function buildLoginResponse(user, req, res) {
     let assignedSitesData = [];
-    if (user.role === models_1.UserRole.SITE_MANAGER && user.assignedSites) {
-        assignedSitesData = user.assignedSites.map((id) => ({
-            id: id.toString(),
-            name: '',
+    if (user.role === types_1.UserRole.SITE_MANAGER && user.assignedSites) {
+        assignedSitesData = user.assignedSites.map((assignment) => ({
+            id: assignment.siteId,
+            name: assignment.site?.name || '',
         }));
     }
+    const normalizedRole = fromPrismaUserRole(user.role);
     const token = (0, auth_1.generateToken)({
-        id: user._id.toString(),
+        id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
-        company_id: user.company_id,
+        role: normalizedRole,
+        company_id: user.companyId,
         isActive: user.isActive,
         assignedSites: assignedSitesData,
     });
-    actionLogService_1.ActionLogService.logLogin(req, user._id.toString(), user.name, user.email, user.role, user.company_id).catch((err) => console.error('Failed to log login action:', err));
-    const company = await getOrCreateDefaultCompany(user.company_id);
+    actionLogService_1.ActionLogService.logLogin(req, user.id, user.name, user.email, normalizedRole, user.companyId).catch((err) => console.error('Failed to log login action:', err));
+    const company = await getOrCreateDefaultCompany(user.companyId);
     const cookieOptions = [
         `access_token=${token}`,
         'Path=/',
@@ -44,11 +51,11 @@ async function buildLoginResponse(user, req, res) {
     res.json({
         token,
         user: {
-            id: user._id.toString(),
+            id: user.id,
             email: user.email,
             name: user.name,
-            role: user.role,
-            company_id: user.company_id,
+            role: normalizedRole,
+            company_id: user.companyId,
             assignedSites: assignedSitesData,
             profilePicture: user.profilePicture,
             phone: user.phone,
@@ -58,7 +65,7 @@ async function buildLoginResponse(user, req, res) {
             location: user.location,
             company: company
                 ? {
-                    id: company._id.toString(),
+                    id: company.id,
                     name: company.name,
                     logo: company.logo,
                     signatureImage: company.signatureImage,
@@ -79,28 +86,25 @@ async function buildLoginResponse(user, req, res) {
 // Helper to get or create default company
 async function getOrCreateDefaultCompany(companyId) {
     try {
-        // First try to find by company_id if provided
         if (companyId) {
-            const company = await Company_1.Company.findOne({ company_id: companyId });
+            const company = await prisma_1.default.company.findUnique({ where: { companyId } });
             if (company)
                 return company;
         }
-        // Try to find default company by name
-        const company = await Company_1.Company.findOne({ name: 'Lilstock' });
+        const company = await prisma_1.default.company.findFirst({ where: { name: 'Lilstock' } });
         if (company)
             return company;
-        // If no company found, return null (don't create during login to avoid blocking)
         return null;
     }
     catch (error) {
         console.error('Error during company lookup:', error);
-        return null; // Don't fail login due to company lookup issues
+        return null;
     }
 }
 // Check whether initial admin setup is required (no users in database)
 router.get('/setup-status', async (_req, res) => {
     try {
-        const userCount = await models_1.User.countDocuments();
+        const userCount = await prisma_1.default.user.count();
         res.json({ needsSetup: userCount === 0, userCount });
     }
     catch (error) {
@@ -111,7 +115,7 @@ router.get('/setup-status', async (_req, res) => {
 // One-time bootstrap: create first main manager when database has no users
 router.post('/setup-admin', async (req, res) => {
     try {
-        const userCount = await models_1.User.countDocuments();
+        const userCount = await prisma_1.default.user.count();
         if (userCount > 0) {
             res.status(403).json({
                 error: 'System already initialized. Please sign in instead.',
@@ -131,28 +135,32 @@ router.post('/setup-admin', async (req, res) => {
         }
         const normalizedEmail = String(email).trim().toLowerCase();
         const normalizedCompanyId = String(company_id).trim();
-        const existingCompany = await Company_1.Company.findOne({
-            company_id: normalizedCompanyId,
+        const existingCompany = await prisma_1.default.company.findUnique({
+            where: { companyId: normalizedCompanyId },
         });
         if (existingCompany) {
             res.status(409).json({ error: 'Company ID already exists' });
             return;
         }
-        await Company_1.Company.create({
-            name: company_name?.trim() || normalizedCompanyId,
-            company_id: normalizedCompanyId,
+        await prisma_1.default.company.create({
+            data: {
+                name: company_name?.trim() || normalizedCompanyId,
+                companyId: normalizedCompanyId,
+            },
         });
-        const user = await models_1.User.create({
-            email: normalizedEmail,
-            password,
-            name: String(name).trim(),
-            role: models_1.UserRole.MAIN_MANAGER,
-            company_id: normalizedCompanyId,
-            assignedSites: [],
-            isActive: true,
+        const hashedPassword = await (0, auth_1.hashPassword)(password);
+        const user = await prisma_1.default.user.create({
+            data: {
+                email: normalizedEmail,
+                password: hashedPassword,
+                name: String(name).trim(),
+                role: client_1.UserRole.MAIN_MANAGER,
+                companyId: normalizedCompanyId,
+                isActive: true,
+            },
         });
-        await actionLogService_1.ActionLogService.logFromRequest(req, models_1.ActionType.CREATE, models_1.ResourceType.USER, `Initial admin account created: ${user.name}`, {
-            resourceId: user._id.toString(),
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_1.ActionType.CREATE, actionLogService_1.ResourceType.USER, `Initial admin account created: ${user.name}`, {
+            resourceId: user.id,
             resourceName: user.name,
             details: { email: user.email, company_id: normalizedCompanyId },
         });
@@ -173,7 +181,7 @@ router.post('/register', auth_2.authenticateToken, async (req, res) => {
         const { email, password, name, role, siteIds } = req.body;
         const company_id = req.user.company_id;
         // Only management roles can register new users
-        if (![models_1.UserRole.MAIN_MANAGER, models_1.UserRole.ACCOUNTANT, models_1.UserRole.MANAGER].includes(req.user.role)) {
+        if (![types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER].includes(req.user.role)) {
             res.status(403).json({ error: 'Only managers can create users' });
             return;
         }
@@ -183,30 +191,35 @@ router.post('/register', auth_2.authenticateToken, async (req, res) => {
             return;
         }
         // Check if user exists
-        const existingUser = await models_1.User.findOne({ email });
+        const existingUser = await prisma_1.default.user.findUnique({ where: { email } });
         if (existingUser) {
             res.status(409).json({ error: 'User already exists' });
             return;
         }
-        // Create user (password hashed automatically via pre-save hook)
-        const user = await models_1.User.create({
-            email,
-            password, // Will be hashed automatically
-            name,
-            role,
-            company_id,
-            assignedSites: siteIds?.map((id) => new mongoose_1.default.Types.ObjectId(id)) || [],
-            isActive: true,
+        const hashedPassword = await (0, auth_1.hashPassword)(password);
+        const user = await prisma_1.default.user.create({
+            data: {
+                email,
+                password: hashedPassword,
+                name,
+                role: toPrismaUserRole(role),
+                companyId: company_id,
+                isActive: true,
+                assignedSites: {
+                    create: (siteIds || []).map((id) => ({ siteId: id })),
+                },
+            },
+            include: { assignedSites: { include: { site: true } } },
         });
         // Log user creation
-        await actionLogService_1.ActionLogService.logUserCreate(req, user._id.toString(), user.name, user.email);
+        await actionLogService_1.ActionLogService.logUserCreate(req, user.id, user.name, user.email);
         res.status(201).json({
             message: 'User created successfully',
             user: {
-                id: user._id.toString(),
+                id: user.id,
                 email: user.email,
                 name: user.name,
-                role: user.role,
+                role: fromPrismaUserRole(user.role),
             },
         });
     }
@@ -224,8 +237,11 @@ router.post('/login', async (req, res) => {
             return;
         }
         // Find user
-        const user = await models_1.User.findOne({ email, company_id });
-        if (!user) {
+        const user = await prisma_1.default.user.findUnique({
+            where: { email },
+            include: { assignedSites: { include: { site: true } } },
+        });
+        if (!user || user.companyId !== company_id) {
             res.status(401).json({ error: 'Invalid credentials' });
             return;
         }
@@ -233,13 +249,11 @@ router.post('/login', async (req, res) => {
             res.status(401).json({ error: 'Account is deactivated' });
             return;
         }
-        // Verify password using the model method
-        const isValidPassword = await user.comparePassword(password);
+        const isValidPassword = await (0, auth_1.verifyPassword)(password, user.password);
         if (!isValidPassword) {
             res.status(401).json({ error: 'Invalid credentials' });
             return;
         }
-        // Get assigned sites for site managers
         await buildLoginResponse(user, req, res);
     }
     catch (error) {
@@ -270,31 +284,35 @@ router.post('/logout', auth_2.authenticateToken, async (req, res) => {
 // Get current user
 router.get('/me', auth_2.authenticateToken, async (req, res) => {
     try {
-        const user = await models_1.User.findById(req.user.id).select('-password').populate('assignedSites', 'name');
+        const user = await prisma_1.default.user.findUnique({
+            where: { id: req.user.id },
+            include: { assignedSites: { include: { site: true } } },
+        });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
         // Fetch or create company data
-        const company = await getOrCreateDefaultCompany(user.company_id);
+        const company = await getOrCreateDefaultCompany(user.companyId);
         res.json({
-            id: user._id.toString(),
+            id: user.id,
             email: user.email,
             name: user.name,
-            role: user.role,
-            company_id: user.company_id,
-            assignedSites: user.assignedSites,
-            // Profile fields
+            role: fromPrismaUserRole(user.role),
+            company_id: user.companyId,
+            assignedSites: user.assignedSites.map((assignment) => ({
+                id: assignment.siteId,
+                name: assignment.site?.name || '',
+            })),
             profilePicture: user.profilePicture,
             phone: user.phone,
             department: user.department,
             jobTitle: user.jobTitle,
             bio: user.bio,
             location: user.location,
-            // Company data
             company: company
                 ? {
-                    id: company._id.toString(),
+                    id: company.id,
                     name: company.name,
                     logo: company.logo,
                     signatureImage: company.signatureImage,
@@ -324,20 +342,21 @@ router.post('/change-password', auth_2.authenticateToken, async (req, res) => {
             res.status(400).json({ error: 'Current password and new password are required' });
             return;
         }
-        const user = await models_1.User.findById(req.user.id);
+        const user = await prisma_1.default.user.findUnique({ where: { id: req.user.id } });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        // Verify current password
-        const isValidPassword = await user.comparePassword(currentPassword);
+        const isValidPassword = await (0, auth_1.verifyPassword)(currentPassword, user.password);
         if (!isValidPassword) {
             res.status(401).json({ error: 'Current password is incorrect' });
             return;
         }
-        // Update password (will be hashed automatically via pre-save hook)
-        user.password = newPassword;
-        await user.save();
+        const hashedPassword = await (0, auth_1.hashPassword)(newPassword);
+        await prisma_1.default.user.update({
+            where: { id: req.user.id },
+            data: { password: hashedPassword },
+        });
         res.json({ message: 'Password changed successfully' });
     }
     catch (error) {
@@ -350,22 +369,26 @@ router.get('/users', auth_2.authenticateToken, async (req, res) => {
     try {
         const company_id = req.user.company_id;
         // Management roles can view all users
-        if (![models_1.UserRole.MAIN_MANAGER, models_1.UserRole.ACCOUNTANT, models_1.UserRole.MANAGER].includes(req.user.role)) {
+        if (![types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER].includes(req.user.role)) {
             res.status(403).json({ error: 'Only managers can view all users' });
             return;
         }
-        const users = await models_1.User.find({ company_id })
-            .select('-password')
-            .populate('assignedSites', 'name')
-            .sort({ createdAt: -1 });
-        res.json(users.map(user => ({
-            id: user._id.toString(),
+        const users = await prisma_1.default.user.findMany({
+            where: { companyId: company_id },
+            include: { assignedSites: { include: { site: true } } },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(users.map((user) => ({
+            id: user.id,
             name: user.name,
             email: user.email,
-            role: user.role,
-            company_id: user.company_id,
+            role: fromPrismaUserRole(user.role),
+            company_id: user.companyId,
             isActive: user.isActive,
-            assignedSites: user.assignedSites,
+            assignedSites: user.assignedSites.map((assignment) => ({
+                id: assignment.siteId,
+                name: assignment.site?.name || '',
+            })),
             createdAt: user.createdAt,
         })));
     }
@@ -382,50 +405,57 @@ router.put('/users/:id', auth_2.authenticateToken, async (req, res) => {
         const company_id = req.user.company_id;
         const idStr = Array.isArray(id) ? id[0] : id;
         // Management roles can update users
-        if (![models_1.UserRole.MAIN_MANAGER, models_1.UserRole.ACCOUNTANT, models_1.UserRole.MANAGER].includes(req.user.role)) {
+        if (![types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER].includes(req.user.role)) {
             res.status(403).json({ error: 'Only managers can update users' });
             return;
         }
         // Find the user first
-        const user = await models_1.User.findOne({
-            _id: new mongoose_1.default.Types.ObjectId(idStr),
-            company_id,
-        }).populate('assignedSites', 'name');
-        if (!user) {
+        const user = await prisma_1.default.user.findUnique({
+            where: { id: idStr },
+            include: { assignedSites: { include: { site: true } } },
+        });
+        if (!user || user.companyId !== company_id) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
         // Update fields
+        const updateData = {};
         if (name)
-            user.name = name;
+            updateData.name = name;
         if (email)
-            user.email = email;
+            updateData.email = email;
         if (role)
-            user.role = role;
+            updateData.role = toPrismaUserRole(role);
         if (isActive !== undefined)
-            user.isActive = isActive;
-        if (assignedSiteIds) {
-            user.assignedSites = assignedSiteIds.map((id) => new mongoose_1.default.Types.ObjectId(id));
-        }
+            updateData.isActive = isActive;
         if (password && password.length >= 6) {
             console.log('Updating password for user:', user.email);
-            user.password = password; // Will be hashed by pre-save hook
-            user.markModified('password'); // Force mark as modified
+            updateData.password = await (0, auth_1.hashPassword)(password);
         }
-        // Save to trigger pre-save hook for password hashing
-        await user.save();
-        console.log('User saved, password modified:', user.isModified('password'));
+        if (assignedSiteIds) {
+            await prisma_1.default.siteAssignment.deleteMany({ where: { userId: idStr } });
+            await prisma_1.default.siteAssignment.createMany({
+                data: assignedSiteIds.map((siteId) => ({ userId: idStr, siteId })),
+            });
+        }
+        const updatedUser = await prisma_1.default.user.update({
+            where: { id: idStr },
+            data: updateData,
+            include: { assignedSites: { include: { site: true } } },
+        });
         // Log user update
-        await actionLogService_1.ActionLogService.logUserUpdate(req, user._id.toString(), user.name);
+        await actionLogService_1.ActionLogService.logUserUpdate(req, updatedUser.id, updatedUser.name);
         res.json({
-            id: user._id.toString(),
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            company_id: user.company_id,
-            isActive: user.isActive,
-            assignedSites: user.assignedSites,
-            createdAt: user.createdAt,
+            id: updatedUser.id,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            role: fromPrismaUserRole(updatedUser.role),
+            company_id: updatedUser.companyId,
+            isActive: updatedUser.isActive,
+            assignedSites: assignedSiteIds
+                ? assignedSiteIds.map((siteId) => ({ id: siteId, name: '' }))
+                : updatedUser.assignedSites?.map((assignment) => ({ id: assignment.siteId, name: assignment.site?.name || '' })) || [],
+            createdAt: updatedUser.createdAt,
         });
     }
     catch (error) {
@@ -441,26 +471,40 @@ router.patch('/users/:id/active', auth_2.authenticateToken, async (req, res) => 
         const company_id = req.user.company_id;
         const idStr = Array.isArray(id) ? id[0] : id;
         // Management roles can toggle user status
-        if (![models_1.UserRole.MAIN_MANAGER, models_1.UserRole.ACCOUNTANT, models_1.UserRole.MANAGER].includes(req.user.role)) {
+        if (![types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER].includes(req.user.role)) {
             res.status(403).json({ error: 'Only managers can toggle user status' });
             return;
         }
-        const user = await models_1.User.findOneAndUpdate({ _id: new mongoose_1.default.Types.ObjectId(idStr), company_id }, { $set: { isActive } }, { returnDocument: 'after' }).select('-password').populate('assignedSites', 'name');
-        if (!user) {
+        const user = await prisma_1.default.user.updateMany({
+            where: { id: idStr, companyId: company_id },
+            data: { isActive },
+        });
+        if (user.count === 0) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
+        const updatedUser = await prisma_1.default.user.findUnique({
+            where: { id: idStr },
+            include: { assignedSites: { include: { site: true } } },
+        });
+        if (!updatedUser) {
+            res.status(404).json({ error: 'User not found after update' });
+            return;
+        }
         // Log user status change (treated as update)
-        await actionLogService_1.ActionLogService.logUserUpdate(req, user._id.toString(), user.name);
+        await actionLogService_1.ActionLogService.logUserUpdate(req, updatedUser.id, updatedUser.name);
         res.json({
-            id: user._id.toString(),
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            company_id: user.company_id,
-            isActive: user.isActive,
-            assignedSites: user.assignedSites,
-            createdAt: user.createdAt,
+            id: updatedUser.id,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            role: fromPrismaUserRole(updatedUser.role),
+            company_id: updatedUser.companyId,
+            isActive: updatedUser.isActive,
+            assignedSites: updatedUser.assignedSites.map((assignment) => ({
+                id: assignment.siteId,
+                name: assignment.site?.name || '',
+            })),
+            createdAt: updatedUser.createdAt,
         });
     }
     catch (error) {
@@ -476,7 +520,7 @@ router.post('/users/:id/sites', auth_2.authenticateToken, async (req, res) => {
         const company_id = req.user.company_id;
         const idStr = Array.isArray(id) ? id[0] : id;
         // Management roles can assign sites
-        if (![models_1.UserRole.MAIN_MANAGER, models_1.UserRole.ACCOUNTANT, models_1.UserRole.MANAGER].includes(req.user.role)) {
+        if (![types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER].includes(req.user.role)) {
             res.status(403).json({ error: 'Only managers can assign sites' });
             return;
         }
@@ -484,23 +528,40 @@ router.post('/users/:id/sites', auth_2.authenticateToken, async (req, res) => {
             res.status(400).json({ error: 'siteIds must be an array' });
             return;
         }
-        const user = await models_1.User.findOneAndUpdate({ _id: new mongoose_1.default.Types.ObjectId(idStr), company_id }, { $set: { assignedSites: siteIds.map((id) => new mongoose_1.default.Types.ObjectId(id)) } }, { returnDocument: 'after' }).select('-password').populate('assignedSites', 'name');
-        if (!user) {
+        const existingUser = await prisma_1.default.user.findUnique({ where: { id: idStr } });
+        if (!existingUser || existingUser.companyId !== company_id) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
+        await prisma_1.default.siteAssignment.deleteMany({ where: { userId: idStr } });
+        if (siteIds.length > 0) {
+            await prisma_1.default.siteAssignment.createMany({
+                data: siteIds.map((siteId) => ({ userId: idStr, siteId })),
+            });
+        }
+        const user = await prisma_1.default.user.findUnique({
+            where: { id: idStr },
+            include: { assignedSites: { include: { site: true } } },
+        });
+        if (!user) {
+            res.status(404).json({ error: 'User not found after assignment update' });
+            return;
+        }
         // Log site assignment (manager assigned to sites)
-        await actionLogService_1.ActionLogService.logFromRequest(req, models_1.ActionType.ASSIGN, models_1.ResourceType.SITE, `Assigned manager ${user.name} to sites: ${siteIds.join(', ')}`, {
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_1.ActionType.ASSIGN, actionLogService_1.ResourceType.SITE, `Assigned manager ${user.name} to sites: ${siteIds.join(', ')}`, {
             details: { managerId: id, siteIds },
         });
         res.json({
-            id: user._id.toString(),
+            id: user.id,
             name: user.name,
             email: user.email,
-            role: user.role,
-            company_id: user.company_id,
+            role: fromPrismaUserRole(user.role),
+            company_id: user.companyId,
             isActive: user.isActive,
-            assignedSites: user.assignedSites,
+            assignedSites: user.assignedSites.map((assignment) => ({
+                id: assignment.siteId,
+                name: assignment.site?.name || '',
+            })),
             createdAt: user.createdAt,
         });
     }
@@ -512,12 +573,27 @@ router.post('/users/:id/sites', auth_2.authenticateToken, async (req, res) => {
 // Get current user profile
 router.get('/profile', auth_2.authenticateToken, async (req, res) => {
     try {
-        const user = await models_1.User.findById(req.user.id).select('-password');
+        const user = await prisma_1.default.user.findUnique({ where: { id: req.user.id } });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        res.json(user);
+        res.json({
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: fromPrismaUserRole(user.role),
+            companyId: user.companyId,
+            isActive: user.isActive,
+            profilePicture: user.profilePicture,
+            phone: user.phone,
+            department: user.department,
+            jobTitle: user.jobTitle,
+            bio: user.bio,
+            location: user.location,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+        });
     }
     catch (error) {
         console.error('Get profile error:', error);
@@ -528,36 +604,51 @@ router.get('/profile', auth_2.authenticateToken, async (req, res) => {
 router.patch('/profile', auth_2.authenticateToken, async (req, res) => {
     try {
         const { name, phone, department, jobTitle, bio, location, profilePicture } = req.body;
-        const user = await models_1.User.findById(req.user.id);
+        const user = await prisma_1.default.user.findUnique({ where: { id: req.user.id } });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        // Update allowed fields
-        if (name)
-            user.name = name;
-        if (phone !== undefined)
-            user.phone = phone;
-        if (department !== undefined)
-            user.department = department;
-        if (jobTitle !== undefined)
-            user.jobTitle = jobTitle;
-        if (bio !== undefined)
-            user.bio = bio;
-        if (location !== undefined)
-            user.location = location;
-        if (profilePicture !== undefined)
-            user.profilePicture = profilePicture;
-        await user.save();
+        const updatedProfile = await prisma_1.default.user.update({
+            where: { id: req.user.id },
+            data: {
+                name: name ?? user.name,
+                phone: phone ?? user.phone,
+                department: department ?? user.department,
+                jobTitle: jobTitle ?? user.jobTitle,
+                bio: bio ?? user.bio,
+                location: location ?? user.location,
+                profilePicture: profilePicture ?? user.profilePicture,
+            },
+        });
         // Log user profile update
-        await actionLogService_1.ActionLogService.logFromRequest(req, models_1.ActionType.UPDATE, models_1.ResourceType.USER, `User updated profile: ${user.name}`, {
-            resourceId: user._id.toString(),
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_1.ActionType.UPDATE, actionLogService_1.ResourceType.USER, `User updated profile: ${user.name}`, {
+            resourceId: user.id,
             resourceName: user.name,
             details: { name, phone, department, jobTitle, bio, location },
         });
         // Return user without password
-        const updatedUser = await models_1.User.findById(req.user.id).select('-password');
-        res.json(updatedUser);
+        const updatedUser = await prisma_1.default.user.findUnique({ where: { id: req.user.id } });
+        if (!updatedUser) {
+            res.status(404).json({ error: 'User not found after update' });
+            return;
+        }
+        res.json({
+            id: updatedUser.id,
+            email: updatedUser.email,
+            name: updatedUser.name,
+            role: fromPrismaUserRole(updatedUser.role),
+            companyId: updatedUser.companyId,
+            isActive: updatedUser.isActive,
+            profilePicture: updatedUser.profilePicture,
+            phone: updatedUser.phone,
+            department: updatedUser.department,
+            jobTitle: updatedUser.jobTitle,
+            bio: updatedUser.bio,
+            location: updatedUser.location,
+            createdAt: updatedUser.createdAt,
+            updatedAt: updatedUser.updatedAt,
+        });
     }
     catch (error) {
         console.error('Update profile error:', error);
@@ -578,16 +669,18 @@ router.post('/profile/picture', auth_2.authenticateToken, async (req, res) => {
             res.status(400).json({ error: 'Image too large. Max 5MB' });
             return;
         }
-        const user = await models_1.User.findById(req.user.id);
+        const user = await prisma_1.default.user.findUnique({ where: { id: req.user.id } });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        user.profilePicture = image;
-        await user.save();
+        await prisma_1.default.user.update({
+            where: { id: req.user.id },
+            data: { profilePicture: image },
+        });
         // Log profile picture update
-        await actionLogService_1.ActionLogService.logFromRequest(req, models_1.ActionType.UPDATE, models_1.ResourceType.USER, `User updated profile picture: ${user.name}`, {
-            resourceId: user._id.toString(),
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_1.ActionType.UPDATE, actionLogService_1.ResourceType.USER, `User updated profile picture: ${user.name}`, {
+            resourceId: user.id,
             resourceName: user.name,
         });
         res.json({ profilePicture: image });

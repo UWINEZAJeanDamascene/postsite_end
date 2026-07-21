@@ -1,11 +1,14 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const zod_1 = require("zod");
 const auth_1 = require("../middleware/auth");
-const Client_1 = require("../models/Client");
+const prisma_1 = __importDefault(require("../config/prisma"));
 const actionLogService_1 = require("../services/actionLogService");
-const ActionLog_1 = require("../models/ActionLog");
+const actionLogService_2 = require("../services/actionLogService");
 const types_1 = require("../types");
 const router = (0, express_1.Router)();
 const clientSchema = zod_1.z.object({
@@ -19,7 +22,7 @@ const clientSchema = zod_1.z.object({
 });
 function formatClient(client) {
     return {
-        id: client._id.toString(),
+        id: client.id,
         name: client.name,
         contactPerson: client.contactPerson,
         email: client.email,
@@ -27,21 +30,20 @@ function formatClient(client) {
         address: client.address,
         taxId: client.taxId,
         notes: client.notes,
-        company_id: client.company_id,
+        company_id: client.companyId,
         isActive: client.isActive,
         createdAt: client.createdAt,
         updatedAt: client.updatedAt,
     };
 }
-const managementRoles = [
-    types_1.UserRole.MAIN_MANAGER,
-    types_1.UserRole.ACCOUNTANT,
-    types_1.UserRole.MANAGER,
-];
+const managementRoles = [types_1.UserRole.MAIN_MANAGER, types_1.UserRole.ACCOUNTANT, types_1.UserRole.MANAGER];
 router.get('/', auth_1.authenticateToken, async (req, res) => {
     try {
         const { company_id } = req.user;
-        const clients = await Client_1.Client.find({ company_id }).sort({ name: 1 }).lean();
+        const clients = await prisma_1.default.client.findMany({
+            where: { companyId: company_id },
+            orderBy: { name: 'asc' },
+        });
         res.json(clients.map(formatClient));
     }
     catch (error) {
@@ -52,8 +54,8 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
 router.get('/:id', auth_1.authenticateToken, async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
-        const client = await Client_1.Client.findOne({ _id: id, company_id }).lean();
+        const id = String(req.params.id);
+        const client = await prisma_1.default.client.findFirst({ where: { id, companyId: company_id } });
         if (!client) {
             res.status(404).json({ message: 'Client not found' });
             return;
@@ -77,17 +79,24 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)(managementRol
             return;
         }
         const data = validation.data;
-        const existing = await Client_1.Client.findOne({ name: data.name, company_id });
+        const existing = await prisma_1.default.client.findFirst({
+            where: { name: data.name, companyId: company_id },
+        });
         if (existing) {
             res.status(400).json({ message: 'A client with this name already exists' });
             return;
         }
-        const client = await Client_1.Client.create({
-            ...data,
-            company_id,
-            isActive: true,
+        const client = await prisma_1.default.client.create({
+            data: {
+                ...data,
+                companyId: company_id,
+                isActive: true,
+            },
         });
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.CLIENT, `Created client ${client.name}`, { resourceId: client._id.toString(), resourceName: client.name });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.CREATE, actionLogService_2.ResourceType.CLIENT, `Created client ${client.name}`, {
+            resourceId: client.id,
+            resourceName: client.name,
+        });
         res.status(201).json(formatClient(client));
     }
     catch (error) {
@@ -98,7 +107,7 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)(managementRol
 router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)(managementRoles), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
+        const id = String(req.params.id);
         const validation = clientSchema.partial().safeParse(req.body);
         if (!validation.success) {
             res.status(400).json({
@@ -109,23 +118,36 @@ router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)(managementR
         }
         const data = validation.data;
         if (data.name) {
-            const existing = await Client_1.Client.findOne({
-                name: data.name,
-                company_id,
-                _id: { $ne: id },
+            const existing = await prisma_1.default.client.findFirst({
+                where: {
+                    name: data.name,
+                    companyId: company_id,
+                    NOT: { id },
+                },
             });
             if (existing) {
                 res.status(400).json({ message: 'A client with this name already exists' });
                 return;
             }
         }
-        const client = await Client_1.Client.findOneAndUpdate({ _id: id, company_id }, { $set: data }, { new: true });
-        if (!client) {
+        const client = await prisma_1.default.client.updateMany({
+            where: { id, companyId: company_id },
+            data,
+        });
+        if (client.count === 0) {
             res.status(404).json({ message: 'Client not found' });
             return;
         }
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.CLIENT, `Updated client ${client.name}`, { resourceId: client._id.toString(), resourceName: client.name });
-        res.json(formatClient(client));
+        const updated = await prisma_1.default.client.findUnique({ where: { id } });
+        if (!updated) {
+            res.status(404).json({ message: 'Client not found after update' });
+            return;
+        }
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.CLIENT, `Updated client ${updated.name}`, {
+            resourceId: updated.id,
+            resourceName: updated.name,
+        });
+        res.json(formatClient(updated));
     }
     catch (error) {
         console.error('Error updating client:', error);
@@ -135,19 +157,30 @@ router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)(managementR
 router.patch('/:id/active', auth_1.authenticateToken, (0, auth_1.requireRole)(managementRoles), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
+        const id = String(req.params.id);
         const { isActive } = req.body;
         if (typeof isActive !== 'boolean') {
             res.status(400).json({ message: 'isActive must be a boolean' });
             return;
         }
-        const client = await Client_1.Client.findOneAndUpdate({ _id: id, company_id }, { $set: { isActive } }, { new: true });
-        if (!client) {
+        const client = await prisma_1.default.client.updateMany({
+            where: { id, companyId: company_id },
+            data: { isActive },
+        });
+        if (client.count === 0) {
             res.status(404).json({ message: 'Client not found' });
             return;
         }
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.CLIENT, `${isActive ? 'Activated' : 'Deactivated'} client ${client.name}`, { resourceId: client._id.toString(), resourceName: client.name });
-        res.json(formatClient(client));
+        const updated = await prisma_1.default.client.findUnique({ where: { id } });
+        if (!updated) {
+            res.status(404).json({ message: 'Client not found after update' });
+            return;
+        }
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.CLIENT, `${isActive ? 'Activated' : 'Deactivated'} client ${updated.name}`, {
+            resourceId: updated.id,
+            resourceName: updated.name,
+        });
+        res.json(formatClient(updated));
     }
     catch (error) {
         console.error('Error toggling client status:', error);
@@ -157,13 +190,17 @@ router.patch('/:id/active', auth_1.authenticateToken, (0, auth_1.requireRole)(ma
 router.delete('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)(managementRoles), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
-        const client = await Client_1.Client.findOneAndDelete({ _id: id, company_id });
+        const id = String(req.params.id);
+        const client = await prisma_1.default.client.findFirst({ where: { id, companyId: company_id } });
         if (!client) {
             res.status(404).json({ message: 'Client not found' });
             return;
         }
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.DELETE, ActionLog_1.ResourceType.CLIENT, `Deleted client ${client.name}`, { resourceId: client._id.toString(), resourceName: client.name });
+        await prisma_1.default.client.delete({ where: { id } });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.DELETE, actionLogService_2.ResourceType.CLIENT, `Deleted client ${client.name}`, {
+            resourceId: client.id,
+            resourceName: client.name,
+        });
         res.json({ message: 'Client deleted successfully' });
     }
     catch (error) {

@@ -1,36 +1,36 @@
 import express from 'express';
+import prisma from '../config/prisma';
 import { authenticateToken } from '../middleware/auth';
-import { Notification } from '../models/Notification';
-import { createNotification } from '../models/Notification';
 
 const router = express.Router();
 
-// Get all notifications for current user
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { page = 1, limit = 20, unreadOnly = false } = req.query;
-    const query: any = { userId: req.user!.id };
-    
+    const { page = 1, limit = 20, unreadOnly = 'false' } = req.query;
+    const pageNum = Number(page) || 1;
+    const limitNum = Number(limit) || 20;
+    const where: any = { userId: req.user!.id };
+
     if (unreadOnly === 'true') {
-      query.isRead = false;
+      where.isRead = false;
     }
 
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .limit(Number(limit) * 1)
-      .skip((Number(page) - 1) * Number(limit));
-
-    const total = await Notification.countDocuments(query);
-    const unreadCount = await Notification.countDocuments({
-      userId: req.user!.id,
-      isRead: false,
-    });
+    const [notifications, total, unreadCount] = await Promise.all([
+      prisma.notification.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
+      }),
+      prisma.notification.count({ where }),
+      prisma.notification.count({ where: { userId: req.user!.id, isRead: false } }),
+    ]);
 
     res.json({
       notifications,
       total,
       unreadCount,
-      hasMore: total > Number(page) * Number(limit),
+      hasMore: total > pageNum * limitNum,
     });
   } catch (error) {
     console.error('Get notifications error:', error);
@@ -38,12 +38,10 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// Get unread count
 router.get('/unread-count', authenticateToken, async (req, res) => {
   try {
-    const count = await Notification.countDocuments({
-      userId: req.user!.id,
-      isRead: false,
+    const count = await prisma.notification.count({
+      where: { userId: req.user!.id, isRead: false },
     });
     res.json({ count });
   } catch (error) {
@@ -52,35 +50,34 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
   }
 });
 
-// Mark notification as read
 router.patch('/:id/read', authenticateToken, async (req, res): Promise<void> => {
   try {
-    const notification = await Notification.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user!.id },
-      { isRead: true },
-      { new: true }
-    );
+    const notificationId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
-    if (!notification) {
+    const notification = await prisma.notification.updateMany({
+      where: { id: notificationId, userId: req.user!.id },
+      data: { isRead: true },
+    });
+
+    if (notification.count === 0) {
       res.status(404).json({ error: 'Notification not found' });
       return;
     }
 
-    res.json(notification);
-    return;
+    const updated = await prisma.notification.findUnique({ where: { id: notificationId } });
+    res.json(updated);
   } catch (error) {
     console.error('Mark read error:', error);
     res.status(500).json({ error: 'Failed to mark notification as read' });
   }
 });
 
-// Mark all as read
 router.patch('/mark-all-read', authenticateToken, async (req, res) => {
   try {
-    await Notification.updateMany(
-      { userId: req.user!.id, isRead: false },
-      { isRead: true }
-    );
+    await prisma.notification.updateMany({
+      where: { userId: req.user!.id, isRead: false },
+      data: { isRead: true },
+    });
     res.json({ success: true });
   } catch (error) {
     console.error('Mark all read error:', error);
@@ -88,21 +85,20 @@ router.patch('/mark-all-read', authenticateToken, async (req, res) => {
   }
 });
 
-// Delete notification
 router.delete('/:id', authenticateToken, async (req, res): Promise<void> => {
   try {
-    const notification = await Notification.findOneAndDelete({
-      _id: req.params.id,
-      userId: req.user!.id,
+    const notificationId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+    const notification = await prisma.notification.deleteMany({
+      where: { id: notificationId, userId: req.user!.id },
     });
 
-    if (!notification) {
+    if (notification.count === 0) {
       res.status(404).json({ error: 'Notification not found' });
       return;
     }
 
     res.json({ success: true });
-    return;
   } catch (error) {
     console.error('Delete notification error:', error);
     res.status(500).json({ error: 'Failed to delete notification' });

@@ -2,13 +2,12 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
-import path from "path";
 import { config } from "./config";
+import prisma from "./config/prisma";
 import {
   initializeWebSocketServer,
   closeWebSocketServer,
 } from "./websocket/server";
-import { connectDB, disconnectDB } from "./config/mongoose";
 
 // Import routes
 import authRoutes from "./routes/auth";
@@ -107,20 +106,17 @@ app.get("/", (_req, res) => {
 // Health check
 app.get("/health", async (_req, res) => {
   try {
-    // Check database connection
-    const mongoose = (await import("./config/mongoose")).default;
-    if (mongoose.connection.readyState === 1) {
-      res.json({
-        status: "healthy",
-        timestamp: new Date().toISOString(),
-        database: "connected",
-        environment: config.NODE_ENV,
-        routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
-      });
-    } else {
-      throw new Error("Database not connected");
-    }
+    await prisma.$queryRaw`SELECT 1`;
+
+    res.json({
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      database: "connected",
+      environment: config.NODE_ENV,
+      routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
+    });
   } catch (error) {
+    console.error("Health check failed:", error);
     res.status(503).json({
       status: "unhealthy",
       timestamp: new Date().toISOString(),
@@ -220,7 +216,7 @@ app.use((_req, res) => {
 async function startServer() {
   try {
     console.log("Connecting to database...");
-    await connectDB();
+    await prisma.$connect();
     console.log("Database connected successfully");
 
     const server = app.listen(config.PORT, () => {
@@ -240,7 +236,7 @@ async function startServer() {
       server.close(() => {
         console.log("HTTP server closed");
       });
-      await disconnectDB();
+      await prisma.$disconnect();
       process.exit(0);
     });
 
@@ -250,7 +246,7 @@ async function startServer() {
       server.close(() => {
         console.log("HTTP server closed");
       });
-      await disconnectDB();
+      await prisma.$disconnect();
       process.exit(0);
     });
   } catch (error) {
@@ -259,7 +255,10 @@ async function startServer() {
   }
 }
 
-startServer();
+// Only start the server if not in test mode
+if (config.NODE_ENV !== 'test') {
+  startServer();
+}
 
 export default app;
 

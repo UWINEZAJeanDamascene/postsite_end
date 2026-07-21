@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { authenticateToken, requireRole } from '../middleware/auth'
 import { z } from 'zod'
-import { Supplier } from '../models/Supplier'
+import prisma from '../config/prisma'
 import { UserRole } from '../types'
 
 const router = Router()
@@ -15,27 +15,27 @@ const supplierSchema = z.object({
   address: z.string().optional(),
 })
 
+function formatSupplier(supplier: any) {
+  return {
+    id: supplier.id,
+    name: supplier.name,
+    contactPerson: supplier.contactPerson,
+    email: supplier.email,
+    phone: supplier.phone,
+    address: supplier.address,
+    company_id: supplier.companyId,
+    isActive: supplier.isActive,
+    createdAt: supplier.createdAt,
+    updatedAt: supplier.updatedAt,
+  }
+}
+
 // Get all suppliers for company
 router.get('/', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   try {
     const { company_id } = req.user!
-
-    const suppliers = await Supplier.find({ company_id }).sort({ name: 1 }).lean()
-
-    res.json(
-      suppliers.map((s: any) => ({
-        id: s._id,
-        name: s.name,
-        contactPerson: s.contactPerson,
-        email: s.email,
-        phone: s.phone,
-        address: s.address,
-        company_id: s.company_id,
-        isActive: s.isActive,
-        createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
-      }))
-    )
+    const suppliers = await prisma.supplier.findMany({ where: { companyId: company_id }, orderBy: { name: 'asc' } })
+    res.json(suppliers.map(formatSupplier))
   } catch (error) {
     console.error('Error fetching suppliers:', error)
     res.status(500).json({ message: 'Failed to fetch suppliers' })
@@ -46,27 +46,16 @@ router.get('/', authenticateToken, async (req: Request, res: Response): Promise<
 router.get('/:id', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   try {
     const { company_id } = req.user!
-    const { id } = req.params
+    const id = String(req.params.id)
 
-    const supplier = await Supplier.findOne({ _id: id, company_id }).lean()
+    const supplier = await prisma.supplier.findFirst({ where: { id, companyId: company_id } })
 
     if (!supplier) {
       res.status(404).json({ message: 'Supplier not found' })
       return
     }
 
-    res.json({
-      id: supplier._id,
-      name: supplier.name,
-      contactPerson: supplier.contactPerson,
-      email: supplier.email,
-      phone: supplier.phone,
-      address: supplier.address,
-      company_id: supplier.company_id,
-      isActive: supplier.isActive,
-      createdAt: supplier.createdAt,
-      updatedAt: supplier.updatedAt,
-    })
+    res.json(formatSupplier(supplier))
   } catch (error) {
     console.error('Error fetching supplier:', error)
     res.status(500).json({ message: 'Failed to fetch supplier' })
@@ -93,37 +82,21 @@ router.post(
 
       const data = validation.data
 
-      // Check for duplicate name
-      const existing = await Supplier.findOne({
-        name: data.name,
-        company_id,
-      })
-
+      const existing = await prisma.supplier.findFirst({ where: { companyId: company_id, name: data.name } })
       if (existing) {
-        res.status(400).json({
-          message: 'A supplier with this name already exists',
-        })
+        res.status(400).json({ message: 'A supplier with this name already exists' })
         return
       }
 
-      const supplier = await Supplier.create({
-        ...data,
-        company_id,
-        isActive: true,
+      const supplier = await prisma.supplier.create({
+        data: {
+          ...data,
+          companyId: company_id,
+          isActive: true,
+        },
       })
 
-      res.status(201).json({
-        id: supplier._id,
-        name: supplier.name,
-        contactPerson: supplier.contactPerson,
-        email: supplier.email,
-        phone: supplier.phone,
-        address: supplier.address,
-        company_id: supplier.company_id,
-        isActive: supplier.isActive,
-        createdAt: supplier.createdAt,
-        updatedAt: supplier.updatedAt,
-      })
+      res.status(201).json(formatSupplier(supplier))
     } catch (error) {
       console.error('Error creating supplier:', error)
       res.status(500).json({ message: 'Failed to create supplier' })
@@ -139,7 +112,7 @@ router.put(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { company_id } = req.user!
-      const { id } = req.params
+      const id = String(req.params.id)
 
       const validation = supplierSchema.partial().safeParse(req.body)
       if (!validation.success) {
@@ -152,45 +125,33 @@ router.put(
 
       const data = validation.data
 
-      // Check for duplicate name if name is being updated
       if (data.name) {
-        const existing = await Supplier.findOne({
-          name: data.name,
-          company_id,
-          _id: { $ne: id },
+        const existing = await prisma.supplier.findFirst({
+          where: {
+            companyId: company_id,
+            name: data.name,
+            NOT: { id },
+          },
         })
 
         if (existing) {
-          res.status(400).json({
-            message: 'A supplier with this name already exists',
-          })
+          res.status(400).json({ message: 'A supplier with this name already exists' })
           return
         }
       }
 
-      const supplier = await Supplier.findOneAndUpdate(
-        { _id: id, company_id },
-        { $set: data },
-        { new: true }
-      ).lean()
+      const supplier = await prisma.supplier.updateMany({
+        where: { id, companyId: company_id },
+        data,
+      })
+      const updated = await prisma.supplier.findFirst({ where: { id, companyId: company_id } })
 
-      if (!supplier) {
+      if (!updated) {
         res.status(404).json({ message: 'Supplier not found' })
         return
       }
 
-      res.json({
-        id: supplier._id,
-        name: supplier.name,
-        contactPerson: supplier.contactPerson,
-        email: supplier.email,
-        phone: supplier.phone,
-        address: supplier.address,
-        company_id: supplier.company_id,
-        isActive: supplier.isActive,
-        createdAt: supplier.createdAt,
-        updatedAt: supplier.updatedAt,
-      })
+      res.json(formatSupplier(updated))
     } catch (error) {
       console.error('Error updating supplier:', error)
       res.status(500).json({ message: 'Failed to update supplier' })
@@ -206,18 +167,15 @@ router.delete(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { company_id } = req.user!
-      const { id } = req.params
+      const id = String(req.params.id)
 
-      const supplier = await Supplier.findOneAndDelete({
-        _id: id,
-        company_id,
-      }).lean()
-
+      const supplier = await prisma.supplier.findFirst({ where: { id, companyId: company_id } })
       if (!supplier) {
         res.status(404).json({ message: 'Supplier not found' })
         return
       }
 
+      await prisma.supplier.delete({ where: { id } })
       res.json({ message: 'Supplier deleted successfully' })
     } catch (error) {
       console.error('Error deleting supplier:', error)
@@ -234,7 +192,7 @@ router.patch(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { company_id } = req.user!
-      const { id } = req.params
+      const id = String(req.params.id)
       const { isActive } = req.body
 
       if (typeof isActive !== 'boolean') {
@@ -242,29 +200,15 @@ router.patch(
         return
       }
 
-      const supplier = await Supplier.findOneAndUpdate(
-        { _id: id, company_id },
-        { $set: { isActive } },
-        { new: true }
-      ).lean()
+      await prisma.supplier.updateMany({ where: { id, companyId: company_id }, data: { isActive } })
+      const supplier = await prisma.supplier.findFirst({ where: { id, companyId: company_id } })
 
       if (!supplier) {
         res.status(404).json({ message: 'Supplier not found' })
         return
       }
 
-      res.json({
-        id: supplier._id,
-        name: supplier.name,
-        contactPerson: supplier.contactPerson,
-        email: supplier.email,
-        phone: supplier.phone,
-        address: supplier.address,
-        company_id: supplier.company_id,
-        isActive: supplier.isActive,
-        createdAt: supplier.createdAt,
-        updatedAt: supplier.updatedAt,
-      })
+      res.json(formatSupplier(supplier))
     } catch (error) {
       console.error('Error toggling supplier status:', error)
       res.status(500).json({ message: 'Failed to update supplier status' })

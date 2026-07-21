@@ -1,7 +1,8 @@
 import { MongoClient, Db } from 'mongodb';
 import { config } from './index';
 
-const uri = config.DATABASE_URL || 'mongodb://localhost:27017/siteSock';
+/** Used only by the one-time Mongo → Postgres legacy migration script. */
+const uri = config.MONGO_URL || 'mongodb://localhost:27017/siteSock';
 
 let client: MongoClient;
 let db: Db;
@@ -12,7 +13,7 @@ export async function connectDB(): Promise<Db> {
   client = new MongoClient(uri);
   await client.connect();
   db = client.db();
-  console.log('Connected to MongoDB');
+  console.log('Connected to MongoDB (legacy migration)');
   return db;
 }
 

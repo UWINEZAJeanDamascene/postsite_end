@@ -1,86 +1,130 @@
-import { connectDB, disconnectDB } from '../src/config/mongoose';
-import { User, Site, Material } from '../src/models';
-import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+dotenv.config();
+
+import prisma from '../src/config/prisma';
+import { hashPassword } from '../src/utils/auth';
 
 const COMPANY_ID = 'CTS';
 
-async function main() {
-  console.log('Connecting to MongoDB...');
-  await connectDB();
+async function seed() {
+  await prisma.$connect();
 
-  console.log('Seeding database...');
-
-  // Check if main manager already exists
-  const existingManager = await User.findOne({
-    role: 'main_manager',
-    company_id: COMPANY_ID,
+  const company = await prisma.company.upsert({
+    where: { companyId: COMPANY_ID },
+    update: {
+      name: 'Lilstock Test Company',
+    },
+    create: {
+      name: 'Lilstock Test Company',
+      companyId: COMPANY_ID,
+    },
   });
 
-  if (existingManager) {
-    console.log('Main manager already exists, skipping seed...');
-    await disconnectDB();
-    return;
+  const passwordHash = await hashPassword('admin123');
+
+  const user = await prisma.user.upsert({
+    where: { email: 'admin@lilstock.com' },
+    update: {
+      name: 'Main Manager',
+      role: 'MAIN_MANAGER',
+      companyId: company.companyId,
+      isActive: true,
+      password: passwordHash,
+    },
+    create: {
+      name: 'Main Manager',
+      email: 'admin@lilstock.com',
+      password: passwordHash,
+      role: 'MAIN_MANAGER',
+      companyId: company.companyId,
+      isActive: true,
+    },
+  });
+
+  const materials = [
+    { name: 'Cement', unit: 'kg', description: 'Portland cement' },
+    { name: 'Steel Rebar', unit: 'meters', description: 'Reinforcement bars' },
+    { name: 'Bricks', unit: 'pcs', description: 'Standard bricks' },
+    { name: 'Sand', unit: 'kg', description: 'Construction sand' },
+  ];
+
+  for (const material of materials) {
+    const existingMaterial = await prisma.material.findFirst({
+      where: { name: material.name, companyId: company.companyId },
+    });
+
+    if (!existingMaterial) {
+      await prisma.material.create({
+        data: {
+          ...material,
+          companyId: company.companyId,
+        },
+      });
+    }
   }
 
-  // Create default main manager (password will be hashed via pre-save hook)
-  const manager = await User.create({
-    email: 'admin@lilstock.com',
-    password: 'admin123', // Will be hashed automatically
-    name: 'Main Manager',
-    role: 'main_manager',
-    company_id: COMPANY_ID,
-    isActive: true,
-  });
-
-  console.log('Created main manager:');
-  console.log('  Email: admin@lilstock.com');
-  console.log('  Password: admin123');
-  console.log('  ID:', manager._id.toString());
-
-  // Create sample materials (master catalog)
-  const materials = await Material.create([
-    { name: 'Cement', unit: 'kg', description: 'Portland cement', company_id: COMPANY_ID },
-    { name: 'Steel Rebar', unit: 'meters', description: 'Reinforcement bars', company_id: COMPANY_ID },
-    { name: 'Bricks', unit: 'pcs', description: 'Standard bricks', company_id: COMPANY_ID },
-    { name: 'Sand', unit: 'kg', description: 'Construction sand', company_id: COMPANY_ID },
-  ]);
-
-  console.log('Created sample materials:');
-  materials.forEach(m => console.log(`  - ${m.name} (${m.unit})`));
-
-  // Create sample sites
-  const sites = await Site.create([
+  const sites = [
     {
       name: 'Site 1 - Downtown Construction',
       location: 'Downtown District',
       description: 'First construction site',
-      company_id: COMPANY_ID,
-      createdBy: manager._id,
-      isActive: true,
     },
     {
       name: 'Site 2 - Industrial Park',
       location: 'Industrial Zone',
       description: 'Second construction site',
-      company_id: COMPANY_ID,
-      createdBy: manager._id,
-      isActive: true,
     },
-  ]);
+  ];
 
-  console.log('Created sample sites:');
-  sites.forEach(s => console.log(`  - ${s.name}`));
+  let firstSiteId: string | null = null;
 
-  console.log('\nSeed completed successfully!');
-  console.log('\nYou can now login with:');
-  console.log('  POST http://localhost:3000/api/auth/login');
-  console.log('  Body: { "email": "admin@lilstock.com", "password": "admin123", "company_id": "CTS" }');
+  for (const siteData of sites) {
+    let site = await prisma.site.findFirst({
+      where: { name: siteData.name, companyId: company.companyId },
+    });
 
-  await disconnectDB();
+    if (!site) {
+      site = await prisma.site.create({
+        data: {
+          ...siteData,
+          companyId: company.companyId,
+          createdById: user.id,
+        },
+      });
+    } else {
+      await prisma.site.update({
+        where: { id: site.id },
+        data: {
+          location: siteData.location,
+          description: siteData.description,
+        },
+      });
+    }
+
+    if (!firstSiteId) {
+      firstSiteId = site.id;
+    }
+  }
+
+  if (firstSiteId) {
+    await prisma.siteAssignment.upsert({
+      where: { userId_siteId: { userId: user.id, siteId: firstSiteId } },
+      update: {},
+      create: {
+        userId: user.id,
+        siteId: firstSiteId,
+      },
+    });
+  }
+
+  console.log('Seed complete.');
+  console.log('Admin credentials: admin@lilstock.com / admin123');
+  console.log(`Company ID: ${company.companyId}`);
+
+  await prisma.$disconnect();
 }
 
-main()
-  .catch((e) => {
-    console.error('Seed error:', e);
-    process.exit(1);
-  });
+seed().catch((error) => {
+  console.error('Seed error:', error);
+  process.exit(1);
+});

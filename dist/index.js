@@ -1,27 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
-};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -31,8 +8,8 @@ const cors_1 = __importDefault(require("cors"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const helmet_1 = __importDefault(require("helmet"));
 const config_1 = require("./config");
+const prisma_1 = __importDefault(require("./config/prisma"));
 const server_1 = require("./websocket/server");
-const mongoose_1 = require("./config/mongoose");
 // Import routes
 const auth_1 = __importDefault(require("./routes/auth"));
 const sites_1 = __importDefault(require("./routes/sites"));
@@ -119,22 +96,17 @@ app.get("/", (_req, res) => {
 // Health check
 app.get("/health", async (_req, res) => {
     try {
-        // Check database connection
-        const mongoose = (await Promise.resolve().then(() => __importStar(require("./config/mongoose")))).default;
-        if (mongoose.connection.readyState === 1) {
-            res.json({
-                status: "healthy",
-                timestamp: new Date().toISOString(),
-                database: "connected",
-                environment: config_1.config.NODE_ENV,
-                routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
-            });
-        }
-        else {
-            throw new Error("Database not connected");
-        }
+        await prisma_1.default.$queryRaw `SELECT 1`;
+        res.json({
+            status: "healthy",
+            timestamp: new Date().toISOString(),
+            database: "connected",
+            environment: config_1.config.NODE_ENV,
+            routes: { invoices: "/invoices", apiInvoices: "/api/invoices" },
+        });
     }
     catch (error) {
+        console.error("Health check failed:", error);
         res.status(503).json({
             status: "unhealthy",
             timestamp: new Date().toISOString(),
@@ -219,7 +191,7 @@ app.use((_req, res) => {
 async function startServer() {
     try {
         console.log("Connecting to database...");
-        await (0, mongoose_1.connectDB)();
+        await prisma_1.default.$connect();
         console.log("Database connected successfully");
         const server = app.listen(config_1.config.PORT, () => {
             console.log(`API server running on port ${config_1.config.PORT}`);
@@ -234,7 +206,7 @@ async function startServer() {
             server.close(() => {
                 console.log("HTTP server closed");
             });
-            await (0, mongoose_1.disconnectDB)();
+            await prisma_1.default.$disconnect();
             process.exit(0);
         });
         process.on("SIGINT", async () => {
@@ -243,7 +215,7 @@ async function startServer() {
             server.close(() => {
                 console.log("HTTP server closed");
             });
-            await (0, mongoose_1.disconnectDB)();
+            await prisma_1.default.$disconnect();
             process.exit(0);
         });
     }
@@ -252,6 +224,8 @@ async function startServer() {
         process.exit(1);
     }
 }
-startServer();
+if (require.main === module) {
+    startServer();
+}
 exports.default = app;
 //# sourceMappingURL=index.js.map

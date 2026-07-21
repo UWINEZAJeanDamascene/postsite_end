@@ -1,41 +1,541 @@
-import { Router } from "express";
-import { Company, Quotation, Invoice, Site, Client } from "../models";
-import { IQuotation } from "../models/Quotation";
-import { authenticateToken, requireMainStockManager } from "../middleware/auth";
-import { ActionLogService } from "../services/actionLogService";
-import { ActionType, ResourceType } from "../models/ActionLog";
-import mongoose from "mongoose";
-import { UserRole } from "../types";
+import { Router } from 'express';
+import prisma from '../config/prisma';
+import { authenticateToken, requireMainStockManager } from '../middleware/auth';
+import { ActionLogService } from '../services/actionLogService';
+import { ActionType, ResourceType } from '../services/actionLogService';
+import { UserRole } from '../types';
 
 const router = Router();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+async function loadCompany(companyId: string) {
+  return prisma.company.findFirst({
+    where: {
+      OR: [{ companyId }, { id: companyId }],
+    },
+  });
+}
 
-async function generateQTNumber(company_id: string): Promise<string> {
+router.get('/', authenticateToken, async (req, res): Promise<void> => {
+  try {
+    const company_id = req.user!.company_id;
+    const {
+      status,
+      client,
+      clientId,
+      siteId,
+      supplier,
+      startDate,
+      endDate,
+      page = '1',
+      limit = '20',
+    } = req.query;
+
+    const where: any = { companyId: company_id };
+
+    if (req.user!.role === UserRole.SITE_MANAGER) {
+      if (!req.assignedSiteIds?.length) {
+        res.json({ records: [], total: 0, page: 1, totalPages: 0 });
+        return;
+      }
+      where.siteId = { in: req.assignedSiteIds };
+    }
+
+    if (status && status !== 'all') where.status = status as string;
+    if (client) where.clientName = { contains: client as string, mode: 'insensitive' };
+    if (clientId) where.clientId = clientId as string;
+    if (siteId) where.siteId = siteId as string;
+    if (supplier) where.supplierName = { contains: supplier as string, mode: 'insensitive' };
+    if (startDate || endDate) {
+      where.createdAt = {} as any;
+      if (startDate) where.createdAt.gte = new Date(startDate as string);
+      if (endDate) where.createdAt.lte = new Date(endDate as string);
+    }
+
+    const pageNum = parseInt(page as string, 10) || 1;
+    const limitNum = parseInt(limit as string, 10) || 20;
+
+    const [records, total] = await Promise.all([
+      prisma.quotation.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (pageNum - 1) * limitNum,
+        take: limitNum,
+        include: {
+          site: { select: { id: true, name: true, location: true } },
+          createdBy: { select: { name: true } },
+        },
+      }),
+      prisma.quotation.count({ where }),
+    ]);
+
+    res.json({
+      records: records.map(formatQt),
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum),
+    });
+  } catch (err) {
+    console.error('Get quotations error:', err);
+    res.status(500).json({ error: 'Failed to fetch quotations' });
+  }
+});
+
+router.post('/', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const company_id = req.user!.company_id;
+    const { client_id, site_id, supplier, items, taxRate = 0, validUntil, notes, terms } = req.body;
+
+    if (!client_id || !items?.length) {
+      res.status(400).json({ error: 'Client and items are required' });
+      return;
+    }
+
+    const client = await prisma.client.findFirst({
+      where: { id: client_id, companyId: company_id },
+    });
+    if (!client) {
+      res.status(404).json({ error: 'Client not found' });
+      return;
+    }
+
+    if (site_id) {
+      const site = await prisma.site.findFirst({
+        where: { id: site_id, companyId: company_id },
+      });
+      if (!site) {
+        res.status(404).json({ error: 'Site not found' });
+        return;
+      }
+    }
+
+    const processedItems = items.map((item: any) => ({
+      materialName: item.materialName,
+      material_id: item.material_id || null,
+      description: item.description || '',
+      quantityRequested: item.quantityRequested || 0,
+      unitPrice: item.unitPrice || 0,
+      totalPrice: (item.quantityRequested || 0) * (item.unitPrice || 0),
+      unit: item.unit || 'pcs',
+      notes: item.notes || '',
+    }));
+
+    const totals = calculateTotals(processedItems, taxRate);
+    const qtNumber = await generateQTNumber(company_id);
+
+    const qt = await prisma.quotation.create({
+      data: {
+        qtNumber,
+        clientId: client_id,
+        client: client as any,
+        clientName: client.name,
+        supplier: supplier || null,
+        supplierName: supplier?.name || null,
+        siteId: site_id || null,
+        status: 'draft',
+        items: processedItems,
+        subTotal: totals.subTotal,
+        taxRate: totals.taxRate,
+        taxAmount: totals.taxAmount,
+        totalAmount: totals.totalAmount,
+        validUntil: validUntil ? new Date(validUntil) : null,
+        notes,
+        terms,
+        createdById: req.user!.id,
+        companyId: company_id,
+      },
+      include: {
+        site: { select: { id: true, name: true, location: true } },
+        createdBy: { select: { name: true } },
+      },
+    });
+
+    await ActionLogService.logFromRequest(
+      req,
+      ActionType.CREATE,
+      ResourceType.QUOTATION,
+      `Created quotation ${qtNumber} for ${client.name}`,
+      { resourceId: qt.id, resourceName: qtNumber },
+    );
+
+    res.status(201).json({ ...formatQt(qt), message: 'Quotation created successfully' });
+  } catch (err) {
+    console.error('Create quotation error:', err);
+    res.status(500).json({ error: 'Failed to create quotation' });
+  }
+});
+
+router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({
+      where: { id },
+      include: { site: { select: { id: true, name: true, location: true } } },
+    });
+
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+
+    const company = await loadCompany(req.user!.company_id);
+    const formatted = formatQt(qt);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(buildQuotationHtml(formatted, (company || {}) as any));
+  } catch (err) {
+    console.error('Generate quotation PDF error:', err);
+    res.status(500).json({ error: 'Failed to generate quotation PDF' });
+  }
+});
+
+router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({
+      where: { id },
+      include: {
+        site: { select: { id: true, name: true, location: true } },
+        createdBy: { select: { name: true } },
+      },
+    });
+
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+
+    res.json(formatQt(qt));
+  } catch (err) {
+    console.error('Get quotation error:', err);
+    res.status(500).json({ error: 'Failed to fetch quotation' });
+  }
+});
+
+router.put('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const company_id = req.user!.company_id;
+    const existing = await prisma.quotation.findUnique({ where: { id } });
+
+    if (!existing || existing.companyId !== company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+
+    if (existing.status !== 'draft') {
+      res.status(400).json({ error: 'Only draft quotations can be updated' });
+      return;
+    }
+
+    const { client_id, site_id, supplier, items, taxRate = 0, validUntil, notes, terms } = req.body;
+
+    if (!client_id || !items?.length) {
+      res.status(400).json({ error: 'Client and items are required' });
+      return;
+    }
+
+    const client = await prisma.client.findFirst({
+      where: { id: client_id, companyId: company_id },
+    });
+    if (!client) {
+      res.status(404).json({ error: 'Client not found' });
+      return;
+    }
+
+    if (site_id) {
+      const site = await prisma.site.findFirst({
+        where: { id: site_id, companyId: company_id },
+      });
+      if (!site) {
+        res.status(404).json({ error: 'Site not found' });
+        return;
+      }
+    }
+
+    const processedItems = items.map((item: any) => ({
+      materialName: item.materialName,
+      material_id: item.material_id || null,
+      description: item.description || '',
+      quantityRequested: item.quantityRequested || 0,
+      unitPrice: item.unitPrice || 0,
+      totalPrice: (item.quantityRequested || 0) * (item.unitPrice || 0),
+      unit: item.unit || 'pcs',
+      notes: item.notes || '',
+    }));
+
+    const totals = calculateTotals(processedItems, taxRate);
+
+    const updated = await prisma.quotation.update({
+      where: { id },
+      data: {
+        clientId: client_id,
+        client: client as any,
+        clientName: client.name,
+        supplier: supplier || null,
+        supplierName: supplier?.name || null,
+        siteId: site_id || null,
+        items: processedItems,
+        subTotal: totals.subTotal,
+        taxRate: totals.taxRate,
+        taxAmount: totals.taxAmount,
+        totalAmount: totals.totalAmount,
+        validUntil: validUntil ? new Date(validUntil) : null,
+        notes,
+        terms,
+      },
+      include: {
+        site: { select: { id: true, name: true, location: true } },
+        createdBy: { select: { name: true } },
+      },
+    });
+
+    await ActionLogService.logFromRequest(
+      req,
+      ActionType.UPDATE,
+      ResourceType.QUOTATION,
+      `Updated quotation ${updated.qtNumber}`,
+      { resourceId: updated.id, resourceName: updated.qtNumber },
+    );
+
+    res.json({ ...formatQt(updated), message: 'Quotation updated successfully' });
+  } catch (err) {
+    console.error('Update quotation error:', err);
+    res.status(500).json({ error: 'Failed to update quotation' });
+  }
+});
+
+router.delete('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({ where: { id } });
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+    if (qt.status !== 'draft') {
+      res.status(400).json({ error: 'Only draft quotations can be deleted' });
+      return;
+    }
+
+    await prisma.quotation.delete({ where: { id } });
+    await ActionLogService.logFromRequest(req, ActionType.DELETE, ResourceType.QUOTATION, `Deleted quotation ${qt.qtNumber}`, { resourceId: qt.id, resourceName: qt.qtNumber });
+
+    res.json({ message: 'Quotation deleted successfully' });
+  } catch (err) {
+    console.error('Delete quotation error:', err);
+    res.status(500).json({ error: 'Failed to delete quotation' });
+  }
+});
+
+router.post('/:id/duplicate', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const company_id = req.user!.company_id;
+    const original = await prisma.quotation.findUnique({ where: { id } });
+    if (!original || original.companyId !== company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+
+    const qtNumber = await generateQTNumber(company_id);
+    const copy = await prisma.quotation.create({
+      data: {
+        qtNumber,
+        clientId: original.clientId,
+        client: original.client as any,
+        clientName: original.clientName,
+        supplier: original.supplier as any,
+        supplierName: original.supplierName,
+        siteId: original.siteId,
+        status: 'draft',
+        items: original.items as any,
+        subTotal: original.subTotal,
+        taxRate: original.taxRate,
+        taxAmount: original.taxAmount,
+        totalAmount: original.totalAmount,
+        validUntil: original.validUntil,
+        notes: original.notes,
+        terms: original.terms,
+        createdById: req.user!.id,
+        companyId: company_id,
+      },
+    });
+
+    await ActionLogService.logFromRequest(req, ActionType.CREATE, ResourceType.QUOTATION, `Duplicated quotation ${original.qtNumber} → ${qtNumber}`, { resourceId: copy.id, resourceName: qtNumber });
+    res.status(201).json({ id: copy.id, qtNumber: copy.qtNumber, message: 'Quotation duplicated' });
+  } catch (err) {
+    console.error('Duplicate quotation error:', err);
+    res.status(500).json({ error: 'Failed to duplicate quotation' });
+  }
+});
+
+router.patch('/:id/send', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({ where: { id } });
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+    if (qt.status !== 'draft') {
+      res.status(400).json({ error: 'Only draft quotations can be sent' });
+      return;
+    }
+
+    const updated = await prisma.quotation.update({ where: { id }, data: { status: 'sent', sentDate: new Date() } });
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.QUOTATION, `Sent quotation ${updated.qtNumber}`, { resourceId: updated.id, resourceName: updated.qtNumber });
+
+    res.json({ id: updated.id, qtNumber: updated.qtNumber, status: updated.status, sentDate: updated.sentDate, message: 'Quotation sent' });
+  } catch (err) {
+    console.error('Send quotation error:', err);
+    res.status(500).json({ error: 'Failed to send quotation' });
+  }
+});
+
+router.patch('/:id/accept', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({ where: { id } });
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+    if (qt.status !== 'sent') {
+      res.status(400).json({ error: 'Only sent quotations can be accepted' });
+      return;
+    }
+
+    const updated = await prisma.quotation.update({ where: { id }, data: { status: 'accepted' } });
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.QUOTATION, `Accepted quotation ${updated.qtNumber}`, { resourceId: updated.id, resourceName: updated.qtNumber });
+
+    res.json({ id: updated.id, qtNumber: updated.qtNumber, status: updated.status, message: 'Quotation accepted' });
+  } catch (err) {
+    console.error('Accept quotation error:', err);
+    res.status(500).json({ error: 'Failed to accept quotation' });
+  }
+});
+
+router.patch('/:id/reject', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const qt = await prisma.quotation.findUnique({ where: { id } });
+    if (!qt || qt.companyId !== req.user!.company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+    if (qt.status !== 'sent') {
+      res.status(400).json({ error: 'Only sent quotations can be rejected' });
+      return;
+    }
+
+    const updated = await prisma.quotation.update({ where: { id }, data: { status: 'rejected' } });
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.QUOTATION, `Rejected quotation ${updated.qtNumber}`, { resourceId: updated.id, resourceName: updated.qtNumber });
+
+    res.json({ id: updated.id, qtNumber: updated.qtNumber, status: updated.status, message: 'Quotation rejected' });
+  } catch (err) {
+    console.error('Reject quotation error:', err);
+    res.status(500).json({ error: 'Failed to reject quotation' });
+  }
+});
+
+router.post('/:id/convert', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    const company_id = req.user!.company_id;
+
+    const qt = await prisma.quotation.findUnique({ where: { id } });
+    if (!qt || qt.companyId !== company_id) {
+      res.status(404).json({ error: 'Quotation not found' });
+      return;
+    }
+    if (qt.status !== 'accepted') {
+      res.status(400).json({ error: 'Only accepted quotations can be converted to an invoice' });
+      return;
+    }
+    if (qt.convertedToInvoiceId) {
+      res.status(400).json({ error: 'This quotation has already been converted to an invoice' });
+      return;
+    }
+
+    const invoiceNumber = await generateInvoiceNumber(company_id);
+    const dueDate = qt.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const qtItems = Array.isArray(qt.items) ? qt.items : [];
+    const invoiceItems = qtItems.map((item: any) => ({
+      materialName: item.materialName,
+      material_id: item.material_id || null,
+      description: item.description || '',
+      quantity: item.quantityRequested,
+      unitPrice: item.unitPrice,
+      totalPrice: item.totalPrice,
+      unit: item.unit,
+      notes: item.notes || '',
+    }));
+
+    const invoice = await prisma.invoice.create({
+      data: {
+        invoiceNumber,
+        quotationId: id,
+        qtNumber: qt.qtNumber,
+        clientId: qt.clientId || null,
+        client: qt.client || {},
+        clientName: qt.clientName || null,
+        siteId: qt.siteId || null,
+        status: 'draft',
+        items: invoiceItems,
+        subTotal: qt.subTotal || 0,
+        taxRate: qt.taxRate || 0,
+        taxAmount: qt.taxAmount || 0,
+        totalAmount: qt.totalAmount || 0,
+        amountPaid: 0,
+        balanceDue: qt.totalAmount || 0,
+        issueDate: new Date(),
+        dueDate,
+        notes: qt.notes,
+        terms: qt.terms,
+        createdById: req.user!.id,
+        companyId: company_id,
+      },
+    });
+
+    await prisma.quotation.update({ where: { id }, data: { convertedToInvoiceId: invoice.id } });
+    await ActionLogService.logFromRequest(req, ActionType.CREATE, ResourceType.INVOICE, `Converted quotation ${qt.qtNumber} to invoice ${invoiceNumber}`, { resourceId: invoice.id, resourceName: invoiceNumber });
+
+    res.status(201).json({ id: qt.id, qtNumber: qt.qtNumber, convertedToInvoice: { id: invoice.id, invoiceNumber }, message: `Quotation converted to invoice ${invoiceNumber}` });
+  } catch (err) {
+    console.error('Convert quotation error:', err);
+    res.status(500).json({ error: 'Failed to convert quotation to invoice' });
+  }
+});
+
+async function generateInvoiceNumber(company_id: string): Promise<string> {
   const year = new Date().getFullYear();
-  const prefix = `QT-${year}-`;
-  const last = await Quotation.findOne(
-    { company_id, qtNumber: { $regex: `^${prefix}` } },
-    { qtNumber: 1 },
-  ).sort({ qtNumber: -1 });
+  const prefix = `INV-${year}-`;
+  const last = await prisma.invoice.findFirst({
+    where: { companyId: company_id, invoiceNumber: { startsWith: prefix } },
+    orderBy: { invoiceNumber: 'desc' },
+    select: { invoiceNumber: true },
+  });
   let seq = 1;
-  if (last) {
-    const n = parseInt(last.qtNumber.split("-")[2], 10);
+  if (last && last.invoiceNumber) {
+    const parts = last.invoiceNumber.split("-");
+    const n = parseInt(parts[2], 10);
     if (!isNaN(n)) seq = n + 1;
   }
   return `${prefix}${seq.toString().padStart(4, "0")}`;
 }
 
-async function generateInvoiceNumber(company_id: string): Promise<string> {
+async function generateQTNumber(company_id: string): Promise<string> {
   const year = new Date().getFullYear();
-  const prefix = `INV-${year}-`;
-  const last = await Invoice.findOne(
-    { company_id, invoiceNumber: { $regex: `^${prefix}` } },
-    { invoiceNumber: 1 },
-  ).sort({ invoiceNumber: -1 });
+  const prefix = `QT-${year}-`;
+  const last = await prisma.quotation.findFirst({
+    where: { companyId: company_id, qtNumber: { startsWith: prefix } },
+    orderBy: { qtNumber: 'desc' },
+    select: { qtNumber: true },
+  });
+
   let seq = 1;
-  if (last) {
-    const n = parseInt(last.invoiceNumber.split("-")[2], 10);
+  if (last && last.qtNumber) {
+    const parts = last.qtNumber.split("-");
+    const n = parseInt(parts[2], 10);
     if (!isNaN(n)) seq = n + 1;
   }
   return `${prefix}${seq.toString().padStart(4, "0")}`;
@@ -47,14 +547,20 @@ function calculateTotals(items: any[], taxRate = 0) {
   return { subTotal, taxRate, taxAmount, totalAmount: subTotal + taxAmount };
 }
 
-function formatQt(qt: IQuotation) {
+function formatQt(qt: any) {
+  const site = qt.site
+    ? { _id: qt.site.id, name: qt.site.name, location: qt.site.location }
+    : qt.siteId
+      ? { _id: qt.siteId, name: '', location: undefined }
+      : null;
+
   return {
-    id: (qt as any)._id.toString(),
+    id: (qt.id ?? qt._id)?.toString(),
     qtNumber: qt.qtNumber,
-    client_id: (qt.client_id as any)?.toString?.() || undefined,
+    client_id: (qt.clientId ?? qt.client_id)?.toString?.() || undefined,
     client: qt.client || null,
     supplier: qt.supplier || null,
-    site: qt.site_id,
+    site,
     status: qt.status,
     items: qt.items,
     subTotal: qt.subTotal,
@@ -65,8 +571,8 @@ function formatQt(qt: IQuotation) {
     notes: qt.notes,
     terms: qt.terms,
     sentDate: qt.sentDate,
-    convertedToPO: qt.convertedToPO,
-    convertedToInvoice: qt.convertedToInvoice,
+    convertedToPO: qt.convertedToPOId ?? qt.convertedToPO ?? null,
+    convertedToInvoice: qt.convertedToInvoiceId ?? qt.convertedToInvoice?.id ?? qt.convertedToInvoice ?? null,
     createdBy: (qt.createdBy as any)?.name || qt.createdBy,
     createdAt: qt.createdAt,
     updatedAt: qt.updatedAt,
@@ -137,7 +643,7 @@ function formatLongDate(value?: Date): string {
   });
 }
 
-function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: string; signatureImage?: string; stampImage?: string; footerImage?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
+function buildQuotationHtml(qt: any, company: { name?: string; logo?: string; signatureImage?: string; stampImage?: string; footerImage?: string; address?: string; phone?: string; email?: string; website?: string; taxId?: string; industry?: string; description?: string }): string {
   const client = (qt.client || {}) as {
     name?: string;
     contactPerson?: string;
@@ -145,7 +651,7 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
     phone?: string;
     address?: string;
   };
-  const site = qt.site_id as any;
+  const site = (qt.site || qt.site_id) as any;
   const companyName = escapeHtml(company.name || "Lilstock");
   const companyAddress = escapeHtml(company.address || "");
   const companyPhone = escapeHtml(company.phone || "");
@@ -374,7 +880,7 @@ function buildQuotationHtml(qt: IQuotation, company: { name?: string; logo?: str
 </body>
 </html>`;
 }
-function buildQuotationPdf(qt: IQuotation): Buffer {
+function buildQuotationPdf(qt: any): Buffer {
   const pageWidth = 595;
   const pageHeight = 842;
   const margin = 48;
@@ -421,7 +927,7 @@ function buildQuotationPdf(qt: IQuotation): Buffer {
   if (client.address) addText(`Address: ${client.address}`);
   addGap();
 
-  const site = qt.site_id as any;
+  const site = (qt.site || qt.site_id) as any;
   addText("Details", margin, 12, true);
   if (site?.name) addText(`Site: ${site.name}${site.location ? `, ${site.location}` : ""}`);
   addText(`Created: ${qt.createdAt ? new Date(qt.createdAt).toLocaleDateString() : ""}`);
@@ -506,688 +1012,6 @@ function buildQuotationPdf(qt: IQuotation): Buffer {
   return Buffer.from(pdf, "utf8");
 }
 
-// ── GET / — List ──────────────────────────────────────────────────────────────
-
-router.get("/", authenticateToken, async (req, res): Promise<void> => {
-  try {
-    const company_id = req.user!.company_id;
-    const {
-      status,
-      siteId,
-      supplier,
-      client,
-      clientId,
-      startDate,
-      endDate,
-      page = "1",
-      limit = "20",
-    } = req.query;
-
-    const where: any = { company_id };
-
-    if (req.user!.role === UserRole.SITE_MANAGER) {
-      if (!req.assignedSiteIds?.length) {
-        res.json({ records: [], total: 0, page: 1, totalPages: 0 });
-        return;
-      }
-      where.site_id = {
-        $in: req.assignedSiteIds
-          .filter((id) => mongoose.Types.ObjectId.isValid(id))
-          .map((id) => new mongoose.Types.ObjectId(id)),
-      };
-    }
-
-    if (status && status !== "all") where.status = status;
-    if (siteId && mongoose.Types.ObjectId.isValid(siteId as string))
-      where.site_id = new mongoose.Types.ObjectId(siteId as string);
-    if (supplier) where["supplier.name"] = { $regex: supplier, $options: "i" };
-    if (clientId && mongoose.Types.ObjectId.isValid(clientId as string))
-      where.client_id = new mongoose.Types.ObjectId(clientId as string);
-    if (client) where["client.name"] = { $regex: client, $options: "i" };
-    if (startDate || endDate) {
-      where.createdAt = {};
-      if (startDate) where.createdAt.$gte = new Date(startDate as string);
-      if (endDate) where.createdAt.$lte = new Date(endDate as string);
-    }
-
-    const pageNum = parseInt(page as string, 10) || 1;
-    const limitNum = parseInt(limit as string, 10) || 20;
-
-    const [records, total] = await Promise.all([
-      Quotation.find(where)
-        .sort({ createdAt: -1 })
-        .skip((pageNum - 1) * limitNum)
-        .limit(limitNum)
-        .populate("site_id", "name location")
-        .populate("createdBy", "name"),
-      Quotation.countDocuments(where),
-    ]);
-
-    res.json({
-      records: records.map((qt) => formatQt(qt as IQuotation)),
-      total,
-      page: pageNum,
-      totalPages: Math.ceil(total / limitNum),
-    });
-  } catch (err) {
-    console.error("Get quotations error:", err);
-    res.status(500).json({ error: "Failed to fetch quotations" });
-  }
-});
-
-// ── GET /:id — Single ─────────────────────────────────────────────────────────
-
-router.get("/:id", authenticateToken, async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    const qt = await Quotation.findOne({
-      _id: new mongoose.Types.ObjectId(id),
-      company_id: req.user!.company_id,
-    })
-      .populate("site_id", "name location")
-      .populate("createdBy", "name");
-
-    if (!qt) {
-      res.status(404).json({ error: "Quotation not found" });
-      return;
-    }
-    res.json(formatQt(qt as IQuotation));
-  } catch (err) {
-    console.error("Get quotation error:", err);
-    res.status(500).json({ error: "Failed to fetch quotation" });
-  }
-});
-
-router.get("/:id/pdf", authenticateToken, async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    const qt = await Quotation.findOne({
-      _id: new mongoose.Types.ObjectId(id),
-      company_id: req.user!.company_id,
-    })
-      .populate("site_id", "name location")
-      .populate("createdBy", "name");
-
-    if (!qt) {
-      res.status(404).json({ error: "Quotation not found" });
-      return;
-    }
-
-    const company = (await Company.findOne({ company_id: req.user!.company_id }).lean()) ||
-      (mongoose.Types.ObjectId.isValid(req.user!.company_id)
-        ? await Company.findById(req.user!.company_id).lean()
-        : null) ||
-      (await Company.findOne({ name: "Lilstock" }).lean()) ||
-      {};
-    const html = buildQuotationHtml(qt as IQuotation, company as any);
-    res.setHeader("Content-Type", "text/html");
-    res.send(html);
-  } catch (err) {
-    console.error("Generate quotation PDF error:", err);
-    res.status(500).json({ error: "Failed to generate quotation PDF" });
-  }
-});
-
-// ── POST / — Create ───────────────────────────────────────────────────────────
-
-router.post(
-  "/",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const company_id = req.user!.company_id;
-      const {
-        client_id,
-        supplier,
-        site_id,
-        items,
-        taxRate = 0,
-        validUntil,
-        notes,
-        terms,
-      } = req.body;
-
-      if (!client_id || !items?.length) {
-        res.status(400).json({ error: "Client and items are required" });
-        return;
-      }
-
-      if (!mongoose.Types.ObjectId.isValid(client_id)) {
-        res.status(400).json({ error: "Invalid client ID" });
-        return;
-      }
-
-      const client = await Client.findOne({
-        _id: new mongoose.Types.ObjectId(client_id),
-        company_id,
-      }).lean();
-
-      if (!client) {
-        res.status(404).json({ error: "Client not found" });
-        return;
-      }
-
-      if (site_id) {
-        if (!mongoose.Types.ObjectId.isValid(site_id)) {
-          res.status(400).json({ error: "Invalid site ID" });
-          return;
-        }
-        const site = await Site.findOne({
-          _id: new mongoose.Types.ObjectId(site_id),
-          company_id,
-        });
-        if (!site) {
-          res.status(404).json({ error: "Site not found" });
-          return;
-        }
-      }
-
-      const processedItems = items.map((i: any) => ({
-        materialName: i.materialName,
-        material_id: i.material_id || null,
-        description: i.description || "",
-        quantityRequested: i.quantityRequested || 0,
-        unitPrice: i.unitPrice || 0,
-        totalPrice: (i.quantityRequested || 0) * (i.unitPrice || 0),
-        unit: i.unit || "pcs",
-        notes: i.notes || "",
-      }));
-
-      const totals = calculateTotals(processedItems, taxRate);
-      const qtNumber = await generateQTNumber(company_id);
-
-      const qt = (await Quotation.create({
-        qtNumber,
-        client_id: new mongoose.Types.ObjectId(client_id),
-        client: {
-          name: client.name,
-          contactPerson: client.contactPerson || "",
-          email: client.email || "",
-          phone: client.phone || "",
-          address: client.address || "",
-        },
-        supplier: supplier || {},
-        site_id: site_id ? new mongoose.Types.ObjectId(site_id) : undefined,
-        status: "draft",
-        items: processedItems,
-        ...totals,
-        validUntil: validUntil ? new Date(validUntil) : undefined,
-        notes,
-        terms,
-        createdBy: new mongoose.Types.ObjectId(req.user!.id),
-        company_id,
-      })) as any;
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.CREATE,
-        ResourceType.QUOTATION,
-        `Created quotation ${qtNumber} for ${client.name}`,
-        { resourceId: qt._id.toString(), resourceName: qtNumber },
-      );
-
-      res.status(201).json({
-        id: qt._id.toString(),
-        qtNumber: qt.qtNumber,
-        client_id: qt.client_id?.toString(),
-        client: qt.client,
-        supplier: qt.supplier,
-        status: qt.status,
-        totalAmount: qt.totalAmount,
-        message: "Quotation created successfully",
-      });
-    } catch (err) {
-      console.error("Create quotation error:", err);
-      res.status(500).json({ error: "Failed to create quotation" });
-    }
-  },
-);
-
-// ── PUT /:id — Update (draft only) ────────────────────────────────────────────
-
-router.put(
-  "/:id",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const company_id = req.user!.company_id;
-      const {
-        supplier,
-        site_id,
-        items,
-        taxRate = 0,
-        validUntil,
-        notes,
-        terms,
-      } = req.body;
-
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "draft") {
-        res.status(400).json({ error: "Only draft quotations can be edited" });
-        return;
-      }
-
-      if (site_id) {
-        if (!mongoose.Types.ObjectId.isValid(site_id)) {
-          res.status(400).json({ error: "Invalid site ID" });
-          return;
-        }
-        const site = await Site.findOne({
-          _id: new mongoose.Types.ObjectId(site_id),
-          company_id,
-        });
-        if (!site) {
-          res.status(404).json({ error: "Site not found" });
-          return;
-        }
-      }
-
-      const processedItems = items.map((i: any) => ({
-        materialName: i.materialName,
-        material_id: i.material_id || null,
-        description: i.description || "",
-        quantityRequested: i.quantityRequested || 0,
-        unitPrice: i.unitPrice || 0,
-        totalPrice: (i.quantityRequested || 0) * (i.unitPrice || 0),
-        unit: i.unit || "pcs",
-        notes: i.notes || "",
-      }));
-
-      const totals = calculateTotals(processedItems, taxRate);
-
-      if (supplier) {
-        qt.supplier = supplier;
-      }
-      qt.site_id = site_id ? new mongoose.Types.ObjectId(site_id) : undefined;
-      qt.items = processedItems as any;
-      qt.subTotal = totals.subTotal;
-      qt.taxRate = totals.taxRate;
-      qt.taxAmount = totals.taxAmount;
-      qt.totalAmount = totals.totalAmount;
-      qt.validUntil = validUntil ? new Date(validUntil) : undefined;
-      qt.notes = notes;
-      qt.terms = terms;
-      await qt.save();
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.UPDATE,
-        ResourceType.QUOTATION,
-        `Updated quotation ${qt.qtNumber}`,
-        {
-          resourceId: (qt as any)._id.toString(),
-          resourceName: qt.qtNumber,
-        },
-      );
-
-      res.json({
-        id: (qt as any)._id.toString(),
-        qtNumber: qt.qtNumber,
-        client_id: qt.client_id?.toString(),
-        client: qt.client,
-        supplier: qt.supplier,
-        message: "Quotation updated successfully",
-      });
-    } catch (err) {
-      console.error("Update quotation error:", err);
-      res.status(500).json({ error: "Failed to update quotation" });
-    }
-  },
-);
-
-// ── DELETE /:id ───────────────────────────────────────────────────────────────
-
-router.delete(
-  "/:id",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id: req.user!.company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "draft") {
-        res.status(400).json({ error: "Only draft quotations can be deleted" });
-        return;
-      }
-      await Quotation.deleteOne({ _id: (qt as any)._id });
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.DELETE,
-        ResourceType.QUOTATION,
-        `Deleted quotation ${qt.qtNumber}`,
-        {
-          resourceId: (qt as any)._id.toString(),
-          resourceName: qt.qtNumber,
-        },
-      );
-      res.json({ message: "Quotation deleted successfully" });
-    } catch (err) {
-      console.error("Delete quotation error:", err);
-      res.status(500).json({ error: "Failed to delete quotation" });
-    }
-  },
-);
-
-// ── POST /:id/duplicate ───────────────────────────────────────────────────────
-
-router.post(
-  "/:id/duplicate",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const company_id = req.user!.company_id;
-      const original = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id,
-      });
-      if (!original) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-
-      const qtNumber = await generateQTNumber(company_id);
-      const copy = (await Quotation.create({
-        qtNumber,
-        supplier: original.supplier,
-        site_id: original.site_id,
-        status: "draft",
-        items: original.items,
-        subTotal: original.subTotal,
-        taxRate: original.taxRate,
-        taxAmount: original.taxAmount,
-        totalAmount: original.totalAmount,
-        validUntil: original.validUntil,
-        notes: original.notes,
-        terms: original.terms,
-        createdBy: new mongoose.Types.ObjectId(req.user!.id),
-        company_id,
-      })) as any;
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.CREATE,
-        ResourceType.QUOTATION,
-        `Duplicated quotation ${original.qtNumber} → ${qtNumber}`,
-        { resourceId: copy._id.toString(), resourceName: qtNumber },
-      );
-
-      res.status(201).json({
-        id: copy._id.toString(),
-        qtNumber: copy.qtNumber,
-        message: "Quotation duplicated",
-      });
-    } catch (err) {
-      console.error("Duplicate quotation error:", err);
-      res.status(500).json({ error: "Failed to duplicate quotation" });
-    }
-  },
-);
-
-// ── PATCH /:id/send ───────────────────────────────────────────────────────────
-
-router.patch(
-  "/:id/send",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id: req.user!.company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "draft") {
-        res.status(400).json({ error: "Only draft quotations can be sent" });
-        return;
-      }
-      qt.status = "sent";
-      qt.sentDate = new Date();
-      await qt.save();
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.UPDATE,
-        ResourceType.QUOTATION,
-        `Sent quotation ${qt.qtNumber} to ${qt.client?.name || qt.supplier?.name || "recipient"}`,
-        {
-          resourceId: (qt as any)._id.toString(),
-          resourceName: qt.qtNumber,
-        },
-      );
-
-      res.json({
-        id: (qt as any)._id.toString(),
-        qtNumber: qt.qtNumber,
-        status: qt.status,
-        sentDate: qt.sentDate,
-        message: "Quotation sent",
-      });
-    } catch (err) {
-      console.error("Send quotation error:", err);
-      res.status(500).json({ error: "Failed to send quotation" });
-    }
-  },
-);
-
-// ── PATCH /:id/accept ─────────────────────────────────────────────────────────
-
-router.patch(
-  "/:id/accept",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id: req.user!.company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "sent") {
-        res.status(400).json({ error: "Only sent quotations can be accepted" });
-        return;
-      }
-      qt.status = "accepted";
-      await qt.save();
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.UPDATE,
-        ResourceType.QUOTATION,
-        `Accepted quotation ${qt.qtNumber}`,
-        {
-          resourceId: (qt as any)._id.toString(),
-          resourceName: qt.qtNumber,
-        },
-      );
-
-      res.json({
-        id: (qt as any)._id.toString(),
-        qtNumber: qt.qtNumber,
-        status: qt.status,
-        message: "Quotation accepted",
-      });
-    } catch (err) {
-      console.error("Accept quotation error:", err);
-      res.status(500).json({ error: "Failed to accept quotation" });
-    }
-  },
-);
-
-// ── PATCH /:id/reject ─────────────────────────────────────────────────────────
-
-router.patch(
-  "/:id/reject",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id: req.user!.company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "sent") {
-        res.status(400).json({ error: "Only sent quotations can be rejected" });
-        return;
-      }
-      qt.status = "rejected";
-      await qt.save();
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.UPDATE,
-        ResourceType.QUOTATION,
-        `Rejected quotation ${qt.qtNumber}`,
-        {
-          resourceId: (qt as any)._id.toString(),
-          resourceName: qt.qtNumber,
-        },
-      );
-
-      res.json({
-        id: (qt as any)._id.toString(),
-        qtNumber: qt.qtNumber,
-        status: qt.status,
-        message: "Quotation rejected",
-      });
-    } catch (err) {
-      console.error("Reject quotation error:", err);
-      res.status(500).json({ error: "Failed to reject quotation" });
-    }
-  },
-);
-
-// Convert accepted quotation to invoice
-
-router.post(
-  "/:id/convert",
-  authenticateToken,
-  requireMainStockManager,
-  async (req, res): Promise<void> => {
-    try {
-      const id = String(req.params.id);
-      const company_id = req.user!.company_id;
-
-      const qt = await Quotation.findOne({
-        _id: new mongoose.Types.ObjectId(id),
-        company_id,
-      });
-      if (!qt) {
-        res.status(404).json({ error: "Quotation not found" });
-        return;
-      }
-      if (qt.status !== "accepted") {
-        res.status(400).json({
-          error: "Only accepted quotations can be converted to an invoice",
-        });
-        return;
-      }
-      if (qt.convertedToInvoice) {
-        res.status(400).json({
-          error: "This quotation has already been converted to an invoice",
-        });
-        return;
-      }
-
-      const invoiceNumber = await generateInvoiceNumber(company_id);
-      const dueDate = qt.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      const invoiceItems = qt.items.map((item: any) => ({
-        materialName: item.materialName,
-        material_id: item.material_id || null,
-        description: item.description || "",
-        quantity: item.quantityRequested,
-        unitPrice: item.unitPrice,
-        totalPrice: item.totalPrice,
-        unit: item.unit,
-        notes: item.notes || "",
-      }));
-
-      const invoice = (await Invoice.create({
-        invoiceNumber,
-        quotation_id: (qt as any)._id,
-        qtNumber: qt.qtNumber,
-        client_id: qt.client_id || undefined,
-        client: {
-          name: qt.client?.name || qt.supplier?.name || "Client",
-          contactPerson: qt.client?.contactPerson || qt.supplier?.contactPerson || "",
-          email: qt.client?.email || qt.supplier?.email || "",
-          phone: qt.client?.phone || qt.supplier?.phone || "",
-          address: qt.client?.address || qt.supplier?.address || "",
-        },
-        site_id: qt.site_id || undefined,
-        status: "draft",
-        items: invoiceItems,
-        subTotal: qt.subTotal,
-        taxRate: qt.taxRate,
-        taxAmount: qt.taxAmount,
-        totalAmount: qt.totalAmount,
-        amountPaid: 0,
-        balanceDue: qt.totalAmount,
-        issueDate: new Date(),
-        dueDate,
-        notes: qt.notes,
-        terms: qt.terms,
-        createdBy: new mongoose.Types.ObjectId(req.user!.id),
-        company_id,
-      })) as any;
-
-      qt.convertedToInvoice = invoice._id as mongoose.Types.ObjectId;
-      await qt.save();
-
-      await ActionLogService.logFromRequest(
-        req,
-        ActionType.CREATE,
-        ResourceType.INVOICE,
-        `Converted quotation ${qt.qtNumber} to invoice ${invoiceNumber}`,
-        { resourceId: invoice._id.toString(), resourceName: invoiceNumber },
-      );
-
-      res.status(201).json({
-        id: (qt as any)._id.toString(),
-        qtNumber: qt.qtNumber,
-        convertedToInvoice: { id: invoice._id.toString(), invoiceNumber },
-        message: `Quotation converted to invoice ${invoiceNumber}`,
-      });
-    } catch (err) {
-      console.error("Convert quotation error:", err);
-      res.status(500).json({ error: "Failed to convert quotation to invoice" });
-    }
-  },
-);
 export default router;
-
-
 
 

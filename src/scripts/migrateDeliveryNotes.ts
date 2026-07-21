@@ -1,138 +1,23 @@
-import dotenv from 'dotenv'
-dotenv.config()
+import dotenv from 'dotenv';
+dotenv.config();
 
-import mongoose from 'mongoose'
-import { SiteRecord, PurchaseOrder } from '../models'
-
-async function tryDatabase(baseUri: string, dbName: string): Promise<any[]> {
-  try {
-    // Properly insert database name into URI
-    let uri: string
-    if (baseUri.includes('?')) {
-      // Has query params - insert db name before ?
-      uri = baseUri.replace(/\?(.*)$/, `/${dbName}?$1`)
-    } else if (baseUri.match(/\/\w+$/)) {
-      // Already has a path - replace it
-      uri = baseUri.replace(/\/[^/]*$/, `/${dbName}`)
-    } else {
-      // No path - add db name
-      uri = `${baseUri}/${dbName}`
-    }
-
-    console.log(`  Trying: ${uri.substring(0, 60)}...`)
-    const conn = await mongoose.createConnection(uri).asPromise()
-    const db = conn.db
-    const collection = db?.collection('deliverynotes')
-    const count = await collection?.countDocuments({}) || 0
-    console.log(`Database '${dbName}': ${count} delivery notes`)
-
-    if (count > 0) {
-      const docs = await collection?.find({}).toArray() || []
-      await conn.close()
-      return docs
-    }
-    await conn.close()
-    return []
-  } catch (e) {
-    console.log(`Database '${dbName}': error - ${e}`)
-    return []
-  }
-}
+import prisma from '../config/prisma';
 
 async function migrateDeliveryNotes() {
   try {
-    const baseUri = process.env.DATABASE_URL || process.env.MONGODB_URI || 'mongodb://localhost:27017'
-    console.log(`Using URI: ${baseUri.substring(0, 50)}...\n`)
+    console.log('This migration script is no longer applicable for the Prisma-backed database.');
+    const deliveryNotes = await prisma.deliveryNote.findMany({
+      select: { id: true, dnNumber: true, companyId: true },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    // Connect directly to the provided URI
-    console.log(`Connecting to MongoDB...`)
-    const conn = await mongoose.createConnection(baseUri).asPromise()
-    const db = conn.db
-    const dbName = db?.databaseName || 'unknown'
-    console.log(`Connected to database: ${dbName}`)
-
-    // Check deliverynotes collection
-    const collection = db?.collection('deliverynotes')
-    const count = await collection?.countDocuments({}) || 0
-    console.log(`Found ${count} delivery notes`)
-
-    if (count === 0) {
-      // List all collections
-      const collections = await db?.listCollections().toArray()
-      console.log('Available collections:', collections?.map((c: any) => c.name).join(', '))
-      await conn.close()
-      process.exit(0)
-    }
-
-    const deliveryNotes = await collection?.find({}).toArray() || []
-    await conn.close()
-
-    // Connect to main database for creating SiteRecords
-    const mainUri = process.env.DATABASE_URL || process.env.MONGODB_URI || 'mongodb://localhost:27017/construction_stock'
-    await mongoose.connect(mainUri)
-    console.log(`Connected to main database for writing SiteRecords\n`)
-
-    let createdCount = 0
-    let skippedCount = 0
-    let errorCount = 0
-
-    for (const dn of deliveryNotes) {
-      try {
-        // Check if site records already exist for this delivery note (check all companies)
-        const existingRecords = await SiteRecord.countDocuments({
-          notes: { $regex: `Delivered via ${dn.dnNumber}` },
-        })
-
-        if (existingRecords > 0) {
-          console.log(`Skipping ${dn.dnNumber} - site records already exist`)
-          skippedCount++
-          continue
-        }
-
-        // Get the PO to find the recordedBy user
-        const po = await PurchaseOrder.findById(dn.poId).lean()
-        const recordedBy = dn.receivedBy || po?.createdBy || new mongoose.Types.ObjectId()
-
-        // Create site records for each delivered item
-        const siteRecordPromises = dn.items
-          .filter((item: any) => item.quantityDelivered > 0)
-          .map((item: any) =>
-            SiteRecord.create({
-              site_id: dn.site_id,
-              material_id: item.material_id || undefined,
-              materialName: item.materialName,
-              quantityReceived: item.quantityDelivered,
-              quantityUsed: 0,
-              date: new Date(dn.deliveryDate),
-              notes: `Delivered via ${dn.dnNumber}. ${item.notes || ''}`,
-              recordedBy: recordedBy,
-              company_id: dn.company_id,
-              syncedToMainStock: false,
-            } as any)
-          )
-
-        await Promise.all(siteRecordPromises)
-        createdCount += siteRecordPromises.length
-        console.log(`Migrated ${dn.dnNumber} - created ${siteRecordPromises.length} site records`)
-      } catch (error) {
-        console.error(`Error migrating ${dn.dnNumber}:`, error)
-        errorCount++
-      }
-    }
-
-    console.log('\nMigration complete:')
-    console.log(`  Created: ${createdCount} site records`)
-    console.log(`  Skipped: ${skippedCount} delivery notes (already migrated)`)
-    console.log(`  Errors: ${errorCount}`)
-
-    await mongoose.disconnect()
-    console.log('Disconnected from MongoDB')
-    process.exit(0)
+    console.log(`Found ${deliveryNotes.length} delivery notes in the Prisma database.`);
+    console.log('No legacy Mongo delivery-note migration is executed here.');
+    process.exit(0);
   } catch (error) {
-    console.error('Migration failed:', error)
-    process.exit(1)
+    console.error('Migration failed:', error);
+    process.exit(1);
   }
 }
 
-// Run migration
-migrateDeliveryNotes()
+migrateDeliveryNotes();

@@ -4,226 +4,568 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = env("POSTGRES_URL")
 }
 
 enum UserRole {
+  MAIN_MANAGER
   SITE_MANAGER
-  MAIN_STOCK_MANAGER
+  ACCOUNTANT
+  MANAGER
+}
+
+enum RecordSource {
+  SITE
+  DIRECT
 }
 
 enum RecordStatus {
-  ACTIVE
-  ADJUSTED
-  ARCHIVED
+  PENDING_PRICE
+  PRICED
+  DIRECT
+}
+
+enum ActionType {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  ASSIGN
+  UNASSIGN
+  PRICE_UPDATE
+  SYNC
+  EXPORT
+  IMPORT
+  VIEW
+  OTHER
+}
+
+enum ResourceType {
+  SITE
+  SITE_RECORD
+  MAIN_STOCK
+  MATERIAL
+  USER
+  SYSTEM
+  COMPANY
+  PURCHASE_ORDER
+  QUOTATION
+  INVOICE
+  CLIENT
+}
+
+enum NotificationType {
+  MATERIAL_RECEIVED
+  MATERIAL_USED
+  MATERIAL_LOW_STOCK
+  SITE_CREATED
+  SITE_UPDATED
+  PRICE_UPDATED
+  RECORD_RECEIVED
+  SYSTEM
+}
+
+enum NotificationPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  RECEIVED
+  COMPLETED
+  CANCELLED
+}
+
+enum DeliveryCondition {
+  good
+  damaged
+  partial
+}
+
+enum PurchaseReturnCondition {
+  defective
+  wrong_item
+  overage
+  other
+}
+
+enum PurchaseReturnRefundStatus {
+  pending
+  processed
+  refunded
+}
+
+enum QuotationStatus {
+  draft
+  sent
+  accepted
+  rejected
+  expired
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  overdue
+  cancelled
+}
+
+enum MovementType {
+  RECEIVED
+  USED
+  ADJUSTMENT
 }
 
 model User {
-  id          String   @id @default(uuid())
-  email       String   @unique
-  password    String
-  name        String
-  role        UserRole
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String           @id @default(uuid())
+  email          String           @unique
+  password       String
+  name           String
+  role           UserRole
+  assignedSites  SiteAssignment[]
+  companyId      String
+  isActive       Boolean          @default(true)
+  profilePicture String?
+  phone          String?
+  department     String?
+  jobTitle       String?
+  bio            String?
+  location       String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  // Site managers can be assigned to multiple sites
-  assignedSites SiteAssignment[]
-
-  // Records created by this user
-  siteRecords SiteRecord[]
+  createdSites     Site[]
+  siteRecords      SiteRecord[]
   mainStockRecords MainStockRecord[]
+  purchaseOrders   PurchaseOrder[]
+  deliveryNotes    DeliveryNote[]    @relation("UserDeliveryNotes")
+  purchaseReturns  PurchaseReturn[]  @relation("UserPurchaseReturns")
+  quotations       Quotation[]
+  invoices         Invoice[]
+  notifications    Notification[]
+  actionLogs       ActionLog[]
+  stockMovements   StockMovement[]
 
-  // Sites created by main stock manager
-  createdSites Site[]
-
-  @@index([email])
+  @@index([companyId])
   @@index([role])
 }
 
 model Site {
   id          String   @id @default(uuid())
   name        String
+  location    String?
   description String?
+  companyId   String
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  // Who created this site (main stock manager)
-  createdById String
-  createdBy   User     @relation(fields: [createdById], references: [id])
-
-  // Site assignments
-  assignments SiteAssignment[]
-
-  // Records from this site
-  siteRecords SiteRecord[]
-
-  // Linked main stock records
+  assignments      SiteAssignment[]
+  siteRecords      SiteRecord[]
   mainStockRecords MainStockRecord[]
+  purchaseOrders   PurchaseOrder[]   @relation("SitePurchaseOrders")
+  deliveryNotes    DeliveryNote[]    @relation("SiteDeliveryNotes")
+  purchaseReturns  PurchaseReturn[]  @relation("SitePurchaseReturns")
+  quotations       Quotation[]       @relation("SiteQuotations")
+  invoices         Invoice[]         @relation("SiteInvoices")
+  stockMovements   StockMovement[]   @relation("SiteStockMovements")
 
+  @@index([companyId])
   @@index([createdById])
 }
 
 model SiteAssignment {
-  id     String @id @default(uuid())
-  userId String
-  siteId String
-
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  site   Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
-
+  id         String   @id @default(uuid())
+  userId     String
+  siteId     String
   assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
   @@unique([userId, siteId])
   @@index([userId])
   @@index([siteId])
 }
 
-// Records created by site managers (no price field)
 model SiteRecord {
-  id            String   @id @default(uuid())
+  id               String    @id @default(uuid())
+  materialName     String
+  quantityReceived Float     @default(0)
+  quantityUsed     Float     @default(0)
+  date             DateTime
+  notes            String?
+  siteId           String
+  site             Site      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  createdById      String
+  createdBy        User      @relation(fields: [createdById], references: [id])
+  materialId       String?
+  material         Material? @relation(fields: [materialId], references: [id])
+  companyId        String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  // Material info
-  materialName  String
-  quantityReceived Float @default(0)
-  quantityUsed  Float   @default(0)
-  date          DateTime
-  notes         String?
-
-  // Relations
-  siteId        String
-  site          Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
-
-  createdById   String
-  createdBy     User     @relation(fields: [createdById], references: [id])
-
-  // Auto-sync tracking
-  syncedToMainId String? @unique
-  mainStockRecord MainStockRecord? @relation("SiteToMain", fields: [syncedToMainId], references: [id])
-
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  mainStockRecord MainStockRecord? @relation("SiteToMain")
 
   @@index([siteId])
   @@index([createdById])
+  @@index([companyId])
   @@index([materialName])
   @@index([date])
 }
 
-// Main stock records (with price and full fields)
 model MainStockRecord {
+  id               String          @id @default(uuid())
+  source           RecordSource
+  siteSource       String
+  quantityReceived Float           @default(0)
+  quantityUsed     Float           @default(0)
+  price            Float?
+  totalValue       Float?
+  date             DateTime
+  status           RecordStatus    @default(PENDING_PRICE)
+  notes            String?
+  isDirectEntry    Boolean         @default(false)
+  sourceRecordId   String?         @unique
+  sourceRecord     SiteRecord?     @relation("SiteToMain", fields: [sourceRecordId], references: [id])
+  createdById      String
+  createdBy        User            @relation(fields: [createdById], references: [id])
+  siteId           String?
+  site             Site?           @relation(fields: [siteId], references: [id])
+  materialId       String?
+  material         Material?       @relation(fields: [materialId], references: [id])
+  companyId        String
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  stockMovements   StockMovement[]
+
+  @@index([companyId])
+  @@index([materialId])
+  @@index([siteId])
+  @@index([source])
+  @@index([status])
+  @@index([date])
+}
+
+model Material {
+  id          String   @id @default(uuid())
+  name        String
+  unit        String
+  description String?
+  companyId   String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  mainStockRecords MainStockRecord[]
+  stockMovements   StockMovement[]   @relation("MaterialStockMovements")
+  siteRecords      SiteRecord[]
+
+  @@index([companyId])
+  @@index([name])
+}
+
+model Client {
   id            String   @id @default(uuid())
-
-  // Material info
-  material      String
-  siteSource    String   // Site name or "direct"
-
-  quantityReceived Float @default(0)
-  quantityUsed  Float    @default(0)
-  price         Float?   // Price per unit (can be added later for site records)
-  totalValue    Float?   // Computed: quantityUsed * price (for used) or (received-used) * price
-
-  date          DateTime
-  status        RecordStatus @default(ACTIVE)
+  name          String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  taxId         String?
   notes         String?
-
-  // Source tracking
-  isDirectEntry Boolean  @default(false)  // True if created directly by main stock manager
-  sourceRecordId String? @unique
-  sourceRecord  SiteRecord? @relation("SiteToMain")
-
-  // Who created/modified this
-  createdById   String
-  createdBy     User     @relation(fields: [createdById], references: [id])
-
-  // Site link (null for direct entries)
-  siteId        String?
-  site          Site?    @relation(fields: [siteId], references: [id])
-
-  // Derived views linkage
-  usedMaterialEntry UsedMaterialView?
-  remainingMaterialEntry RemainingMaterialView?
-
+  companyId     String
+  isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  @@index([material])
-  @@index([siteSource])
-  @@index([siteId])
-  @@index([date])
+  quotations Quotation[] @relation("ClientQuotations")
+  invoices   Invoice[]   @relation("ClientInvoices")
+
+  @@index([companyId])
+  @@index([name])
+}
+
+model Supplier {
+  id            String   @id @default(uuid())
+  name          String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  companyId     String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([name])
+}
+
+model Company {
+  id             String   @id @default(uuid())
+  name           String
+  companyId      String?  @unique
+  logo           String?
+  signatureImage String?
+  stampImage     String?
+  footerImage    String?
+  address        String?
+  phone          String?
+  email          String?
+  website        String?
+  taxId          String?
+  industry       String?
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model PurchaseOrder {
+  id                   String              @id @default(uuid())
+  poNumber             String              @unique
+  supplier             Json?
+  supplierName         String?
+  siteId               String
+  site                 Site                @relation("SitePurchaseOrders", fields: [siteId], references: [id])
+  status               PurchaseOrderStatus @default(DRAFT)
+  items                Json
+  subTotal             Float               @default(0)
+  taxRate              Float               @default(0)
+  taxAmount            Float               @default(0)
+  totalAmount          Float               @default(0)
+  notes                String?
+  terms                String?
+  sentDate             DateTime?
+  expectedDeliveryDate DateTime?
+  createdById          String
+  createdBy            User                @relation(fields: [createdById], references: [id])
+  companyId            String
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([companyId])
   @@index([status])
-  @@index([isDirectEntry])
+  @@index([siteId])
+  @@index([supplierName])
 }
 
-// Aggregated view of used materials (auto-computed)
-model UsedMaterialView {
-  id              String   @id @default(uuid())
+model DeliveryNote {
+  id             String            @id @default(uuid())
+  dnNumber       String            @unique
+  poId           String
+  poNumber       String
+  supplier       Json?
+  supplierName   String?
+  siteId         String
+  site           Site              @relation("SiteDeliveryNotes", fields: [siteId], references: [id])
+  siteInfo       Json?
+  items          Json
+  deliveryDate   DateTime
+  receivedBy     String
+  receivedByName String?
+  carrier        String?
+  trackingNumber String?
+  condition      DeliveryCondition
+  notes          String?
+  attachments    String[]          @default([])
+  subTotal       Float             @default(0)
+  taxRate        Float             @default(0)
+  taxAmount      Float             @default(0)
+  totalAmount    Float             @default(0)
+  createdById    String
+  createdBy      User              @relation("UserDeliveryNotes", fields: [createdById], references: [id])
+  companyId      String
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
-  material        String
-  totalQuantityUsed Float
-  avgPrice        Float?   // Weighted average price
-  totalValue      Float?   // Sum of all values
-
-  // Last updated from which main stock record
-  lastRecordId    String   @unique
-  lastRecord      MainStockRecord @relation(fields: [lastRecordId], references: [id], onDelete: Cascade)
-
-  // Aggregation metadata
-  recordCount     Int      @default(0)
-  siteBreakdown   Json?    // { siteName: quantity }
-
-  updatedAt       DateTime @updatedAt
-
-  @@index([material])
+  @@index([companyId])
+  @@index([supplierName])
+  @@index([siteId])
 }
 
-// Remaining materials balance view (auto-computed)
-model RemainingMaterialView {
-  id              String   @id @default(uuid())
+model PurchaseReturn {
+  id             String                     @id @default(uuid())
+  returnNumber   String                     @unique
+  poId           String
+  poNumber       String
+  supplier       Json?
+  supplierName   String?
+  siteId         String
+  site           Site                       @relation("SitePurchaseReturns", fields: [siteId], references: [id])
+  siteInfo       Json?
+  items          Json
+  returnDate     DateTime
+  returnedBy     String
+  returnedByName String?
+  carrier        String?
+  trackingNumber String?
+  condition      PurchaseReturnCondition
+  refundStatus   PurchaseReturnRefundStatus @default(pending)
+  refundAmount   Float?
+  notes          String?
+  attachments    String[]                   @default([])
+  createdById    String
+  createdBy      User                       @relation("UserPurchaseReturns", fields: [createdById], references: [id])
+  companyId      String
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
 
-  material        String
-  totalReceived   Float
-  totalUsed       Float
-  remainingQuantity Float
-
-  avgPrice        Float?   // For valuation
-  remainingValue  Float?   // remainingQuantity * avgPrice
-
-  // Last updated from which main stock record
-  lastRecordId    String   @unique
-  lastRecord      MainStockRecord @relation(fields: [lastRecordId], references: [id], onDelete: Cascade)
-
-  // Source breakdown
-  siteBreakdown   Json?    // { siteName: { received, used, remaining } }
-
-  updatedAt       DateTime @updatedAt
-
-  @@index([material])
+  @@index([companyId])
+  @@index([supplierName])
+  @@index([siteId])
 }
 
-// Audit log for all stock movements (for traceability)
-model StockMovementLog {
-  id              String   @id @default(uuid())
+model Quotation {
+  id                    String          @id @default(uuid())
+  qtNumber              String          @unique
+  clientId              String?
+  client                Json?
+  clientName            String?
+  clientRelation        Client?         @relation("ClientQuotations", fields: [clientId], references: [id])
+  supplier              Json?
+  supplierName          String?
+  siteId                String?
+  site                  Site?           @relation("SiteQuotations", fields: [siteId], references: [id])
+  status                QuotationStatus @default(draft)
+  items                 Json
+  subTotal              Float           @default(0)
+  taxRate               Float           @default(0)
+  taxAmount             Float           @default(0)
+  totalAmount           Float           @default(0)
+  validUntil            DateTime?
+  notes                 String?
+  terms                 String?
+  sentDate              DateTime?
+  convertedToPOId       String?         @unique
+  convertedToInvoiceId  String?         @unique
+  convertedToInvoice    Invoice?        @relation("QuotationConvertedToInvoice", fields: [convertedToInvoiceId], references: [id])
+  invoicesFromQuotation Invoice[]       @relation("InvoiceQuotationReference")
+  createdById           String
+  createdBy             User            @relation(fields: [createdById], references: [id])
+  companyId             String
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
 
-  action          String   // CREATE, UPDATE, DELETE, SYNC, ADJUST
-  entityType      String   // SiteRecord, MainStockRecord, etc.
-  entityId        String
+  @@index([companyId])
+  @@index([status])
+  @@index([siteId])
+  @@index([supplierName])
+  @@index([clientName])
+}
 
-  // Snapshot of data at time of change
-  beforeState     Json?
-  afterState      Json?
+model Invoice {
+  id                 String        @id @default(uuid())
+  invoiceNumber      String        @unique
+  quotationId        String?
+  quotationReference Quotation?    @relation("InvoiceQuotationReference", fields: [quotationId], references: [id])
+  quotation          Quotation?    @relation("QuotationConvertedToInvoice")
+  qtNumber           String?
+  clientId           String?
+  client             Json?
+  clientName         String?
+  clientRelation     Client?       @relation("ClientInvoices", fields: [clientId], references: [id])
+  siteId             String?
+  site               Site?         @relation("SiteInvoices", fields: [siteId], references: [id])
+  status             InvoiceStatus @default(draft)
+  items              Json
+  subTotal           Float         @default(0)
+  taxRate            Float         @default(0)
+  taxAmount          Float         @default(0)
+  totalAmount        Float         @default(0)
+  amountPaid         Float         @default(0)
+  balanceDue         Float         @default(0)
+  issueDate          DateTime      @default(now())
+  dueDate            DateTime?
+  notes              String?
+  terms              String?
+  sentDate           DateTime?
+  paidDate           DateTime?
+  createdById        String
+  createdBy          User          @relation(fields: [createdById], references: [id])
+  companyId          String
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
-  // Who made the change
-  performedById   String
-  performedByName String
+  @@index([companyId])
+  @@index([status])
+  @@index([siteId])
+  @@index([clientName])
+}
 
-  // Context
-  siteId          String?
-  timestamp       DateTime @default(now())
+model Notification {
+  id        String               @id @default(uuid())
+  userId    String
+  user      User                 @relation(fields: [userId], references: [id])
+  type      NotificationType
+  title     String
+  message   String
+  priority  NotificationPriority @default(MEDIUM)
+  isRead    Boolean              @default(false)
+  data      Json?
+  link      String?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
 
-  @@index([entityType, entityId])
-  @@index([timestamp])
-  @@index([performedById])
+  @@index([userId])
+  @@index([isRead])
+}
+
+model ActionLog {
+  id           String       @id @default(uuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id])
+  userName     String
+  userEmail    String
+  userRole     String
+  companyId    String
+  action       ActionType
+  resource     ResourceType
+  resourceId   String?
+  resourceName String?
+  description  String
+  details      Json?
+  ipAddress    String?
+  userAgent    String?
+  timestamp    DateTime     @default(now())
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+}
+
+model StockMovement {
+  id                       String          @id @default(uuid())
+  mainStockRecordId        String
+  mainStockRecord          MainStockRecord @relation(fields: [mainStockRecordId], references: [id], onDelete: Cascade)
+  siteId                   String?
+  site                     Site?           @relation("SiteStockMovements", fields: [siteId], references: [id])
+  materialId               String?
+  material                 Material?       @relation("MaterialStockMovements", fields: [materialId], references: [id])
+  movementType             MovementType
+  quantity                 Float
+  previousQuantityUsed     Float
+  previousQuantityReceived Float
+  newQuantityUsed          Float
+  newQuantityReceived      Float
+  performedById            String
+  performedBy              User            @relation(fields: [performedById], references: [id])
+  companyId                String
+  date                     DateTime        @default(now())
+  notes                    String?
+  createdAt                DateTime        @default(now())
+
+  @@index([companyId])
+  @@index([mainStockRecordId])
+  @@index([materialId])
+  @@index([date])
 }

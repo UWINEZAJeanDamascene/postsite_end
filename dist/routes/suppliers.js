@@ -1,9 +1,12 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const auth_1 = require("../middleware/auth");
 const zod_1 = require("zod");
-const Supplier_1 = require("../models/Supplier");
+const prisma_1 = __importDefault(require("../config/prisma"));
 const types_1 = require("../types");
 const router = (0, express_1.Router)();
 // Validation schemas
@@ -14,23 +17,26 @@ const supplierSchema = zod_1.z.object({
     phone: zod_1.z.string().optional(),
     address: zod_1.z.string().optional(),
 });
+function formatSupplier(supplier) {
+    return {
+        id: supplier.id,
+        name: supplier.name,
+        contactPerson: supplier.contactPerson,
+        email: supplier.email,
+        phone: supplier.phone,
+        address: supplier.address,
+        company_id: supplier.companyId,
+        isActive: supplier.isActive,
+        createdAt: supplier.createdAt,
+        updatedAt: supplier.updatedAt,
+    };
+}
 // Get all suppliers for company
 router.get('/', auth_1.authenticateToken, async (req, res) => {
     try {
         const { company_id } = req.user;
-        const suppliers = await Supplier_1.Supplier.find({ company_id }).sort({ name: 1 }).lean();
-        res.json(suppliers.map((s) => ({
-            id: s._id,
-            name: s.name,
-            contactPerson: s.contactPerson,
-            email: s.email,
-            phone: s.phone,
-            address: s.address,
-            company_id: s.company_id,
-            isActive: s.isActive,
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-        })));
+        const suppliers = await prisma_1.default.supplier.findMany({ where: { companyId: company_id }, orderBy: { name: 'asc' } });
+        res.json(suppliers.map(formatSupplier));
     }
     catch (error) {
         console.error('Error fetching suppliers:', error);
@@ -41,24 +47,13 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
 router.get('/:id', auth_1.authenticateToken, async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
-        const supplier = await Supplier_1.Supplier.findOne({ _id: id, company_id }).lean();
+        const id = String(req.params.id);
+        const supplier = await prisma_1.default.supplier.findFirst({ where: { id, companyId: company_id } });
         if (!supplier) {
             res.status(404).json({ message: 'Supplier not found' });
             return;
         }
-        res.json({
-            id: supplier._id,
-            name: supplier.name,
-            contactPerson: supplier.contactPerson,
-            email: supplier.email,
-            phone: supplier.phone,
-            address: supplier.address,
-            company_id: supplier.company_id,
-            isActive: supplier.isActive,
-            createdAt: supplier.createdAt,
-            updatedAt: supplier.updatedAt,
-        });
+        res.json(formatSupplier(supplier));
     }
     catch (error) {
         console.error('Error fetching supplier:', error);
@@ -78,34 +73,19 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.User
             return;
         }
         const data = validation.data;
-        // Check for duplicate name
-        const existing = await Supplier_1.Supplier.findOne({
-            name: data.name,
-            company_id,
-        });
+        const existing = await prisma_1.default.supplier.findFirst({ where: { companyId: company_id, name: data.name } });
         if (existing) {
-            res.status(400).json({
-                message: 'A supplier with this name already exists',
-            });
+            res.status(400).json({ message: 'A supplier with this name already exists' });
             return;
         }
-        const supplier = await Supplier_1.Supplier.create({
-            ...data,
-            company_id,
-            isActive: true,
+        const supplier = await prisma_1.default.supplier.create({
+            data: {
+                ...data,
+                companyId: company_id,
+                isActive: true,
+            },
         });
-        res.status(201).json({
-            id: supplier._id,
-            name: supplier.name,
-            contactPerson: supplier.contactPerson,
-            email: supplier.email,
-            phone: supplier.phone,
-            address: supplier.address,
-            company_id: supplier.company_id,
-            isActive: supplier.isActive,
-            createdAt: supplier.createdAt,
-            updatedAt: supplier.updatedAt,
-        });
+        res.status(201).json(formatSupplier(supplier));
     }
     catch (error) {
         console.error('Error creating supplier:', error);
@@ -116,7 +96,7 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.User
 router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
+        const id = String(req.params.id);
         const validation = supplierSchema.partial().safeParse(req.body);
         if (!validation.success) {
             res.status(400).json({
@@ -126,37 +106,29 @@ router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.Us
             return;
         }
         const data = validation.data;
-        // Check for duplicate name if name is being updated
         if (data.name) {
-            const existing = await Supplier_1.Supplier.findOne({
-                name: data.name,
-                company_id,
-                _id: { $ne: id },
+            const existing = await prisma_1.default.supplier.findFirst({
+                where: {
+                    companyId: company_id,
+                    name: data.name,
+                    NOT: { id },
+                },
             });
             if (existing) {
-                res.status(400).json({
-                    message: 'A supplier with this name already exists',
-                });
+                res.status(400).json({ message: 'A supplier with this name already exists' });
                 return;
             }
         }
-        const supplier = await Supplier_1.Supplier.findOneAndUpdate({ _id: id, company_id }, { $set: data }, { new: true }).lean();
-        if (!supplier) {
+        const supplier = await prisma_1.default.supplier.updateMany({
+            where: { id, companyId: company_id },
+            data,
+        });
+        const updated = await prisma_1.default.supplier.findFirst({ where: { id, companyId: company_id } });
+        if (!updated) {
             res.status(404).json({ message: 'Supplier not found' });
             return;
         }
-        res.json({
-            id: supplier._id,
-            name: supplier.name,
-            contactPerson: supplier.contactPerson,
-            email: supplier.email,
-            phone: supplier.phone,
-            address: supplier.address,
-            company_id: supplier.company_id,
-            isActive: supplier.isActive,
-            createdAt: supplier.createdAt,
-            updatedAt: supplier.updatedAt,
-        });
+        res.json(formatSupplier(updated));
     }
     catch (error) {
         console.error('Error updating supplier:', error);
@@ -167,15 +139,13 @@ router.put('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.Us
 router.delete('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
-        const supplier = await Supplier_1.Supplier.findOneAndDelete({
-            _id: id,
-            company_id,
-        }).lean();
+        const id = String(req.params.id);
+        const supplier = await prisma_1.default.supplier.findFirst({ where: { id, companyId: company_id } });
         if (!supplier) {
             res.status(404).json({ message: 'Supplier not found' });
             return;
         }
+        await prisma_1.default.supplier.delete({ where: { id } });
         res.json({ message: 'Supplier deleted successfully' });
     }
     catch (error) {
@@ -187,29 +157,19 @@ router.delete('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1
 router.patch('/:id/active', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
     try {
         const { company_id } = req.user;
-        const { id } = req.params;
+        const id = String(req.params.id);
         const { isActive } = req.body;
         if (typeof isActive !== 'boolean') {
             res.status(400).json({ message: 'isActive must be a boolean' });
             return;
         }
-        const supplier = await Supplier_1.Supplier.findOneAndUpdate({ _id: id, company_id }, { $set: { isActive } }, { new: true }).lean();
+        await prisma_1.default.supplier.updateMany({ where: { id, companyId: company_id }, data: { isActive } });
+        const supplier = await prisma_1.default.supplier.findFirst({ where: { id, companyId: company_id } });
         if (!supplier) {
             res.status(404).json({ message: 'Supplier not found' });
             return;
         }
-        res.json({
-            id: supplier._id,
-            name: supplier.name,
-            contactPerson: supplier.contactPerson,
-            email: supplier.email,
-            phone: supplier.phone,
-            address: supplier.address,
-            company_id: supplier.company_id,
-            isActive: supplier.isActive,
-            createdAt: supplier.createdAt,
-            updatedAt: supplier.updatedAt,
-        });
+        res.json(formatSupplier(supplier));
     }
     catch (error) {
         console.error('Error toggling supplier status:', error);

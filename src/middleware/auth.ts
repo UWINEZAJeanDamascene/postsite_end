@@ -1,9 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyToken, hasPermission, canAccessSite } from '../utils/auth';
-import { User } from '../models';
+import prisma from '../config/prisma';
 import { UserRole } from '../types';
-import type { IUserDocument } from '../models/User';
-import { Types } from 'mongoose';
 import type { User as UserType } from '../types';
 
 // Extend Express Request
@@ -53,26 +51,32 @@ export async function authenticateToken(
     const userId = (decoded as any).userId || (decoded as any).id;
 
     // Verify user still exists and is active
-    const user = await User.findById(userId).select('-password');
+    const user = await prisma.user.findUnique({
+      where: { id: userId as string },
+      include: { assignedSites: true },
+    });
 
     if (!user || !user.isActive) {
       res.status(401).json({ error: 'User not found or inactive' });
       return;
     }
 
+    const normalizedRole = (user.role as string).toLowerCase() as UserRole;
+
     // For site managers, get their assigned sites
-    let assignedSiteIds: string[] = [];
-    if (user.role === UserRole.SITE_MANAGER && user.assignedSites) {
-      assignedSiteIds = user.assignedSites.map((id: any) => id.toString());
-    }
+    const assignedSiteIds =
+      normalizedRole === UserRole.SITE_MANAGER && user.assignedSites
+        ? user.assignedSites.map((assignment: { siteId: string }) => assignment.siteId)
+        : [];
 
     req.user = {
-      id: user._id.toString(),
+      id: user.id,
       email: user.email,
       name: user.name,
-      role: user.role as any, // Cast to UserType's UserRole
-      company_id: user.company_id,
+      role: normalizedRole,
+      company_id: user.companyId,
       isActive: user.isActive,
+      assignedSites: assignedSiteIds.map((id) => ({ id, name: '' })),
     };
     req.assignedSiteIds = assignedSiteIds;
 
@@ -183,15 +187,16 @@ export async function requireSiteRecordOwnership(
     return;
   }
 
-  const recordId = req.params.id;
+  const recordId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   if (!recordId) {
     res.status(400).json({ error: 'Record ID required' });
     return;
   }
 
-  // Import SiteRecord model dynamically to avoid circular dependency
-  const { SiteRecord } = await import('../models/SiteRecord');
-  const record = await SiteRecord.findById(recordId).select('recordedBy site_id');
+  const record = await prisma.siteRecord.findUnique({
+    where: { id: recordId },
+    select: { createdById: true, siteId: true },
+  });
 
   if (!record) {
     res.status(404).json({ error: 'Record not found' });
@@ -199,8 +204,8 @@ export async function requireSiteRecordOwnership(
   }
 
   // Site manager can only modify their own records on their assigned sites
-  const recordedById = record.recordedBy?.toString();
-  const siteId = record.site_id?.toString();
+  const recordedById = record.createdById;
+  const siteId = record.siteId;
 
   if (
     recordedById !== req.user.id ||

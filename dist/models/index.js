@@ -1,45 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Quotation = exports.PurchaseReturn = exports.DeliveryNote = exports.Client = exports.Company = exports.Supplier = exports.Invoice = exports.PurchaseOrder = exports.ResourceType = exports.ActionType = exports.ActionLog = exports.createNotification = exports.NotificationPriority = exports.NotificationType = exports.Notification = exports.MovementType = exports.StockMovement = exports.RecordStatus = exports.RecordSource = exports.MainStockRecord = exports.SiteRecord = exports.Material = exports.Site = exports.UserRole = exports.User = void 0;
-var User_1 = require("./User");
-Object.defineProperty(exports, "User", { enumerable: true, get: function () { return User_1.User; } });
-Object.defineProperty(exports, "UserRole", { enumerable: true, get: function () { return User_1.UserRole; } });
-var Site_1 = require("./Site");
-Object.defineProperty(exports, "Site", { enumerable: true, get: function () { return Site_1.Site; } });
-var Material_1 = require("./Material");
-Object.defineProperty(exports, "Material", { enumerable: true, get: function () { return Material_1.Material; } });
-var SiteRecord_1 = require("./SiteRecord");
-Object.defineProperty(exports, "SiteRecord", { enumerable: true, get: function () { return SiteRecord_1.SiteRecord; } });
-var MainStockRecord_1 = require("./MainStockRecord");
-Object.defineProperty(exports, "MainStockRecord", { enumerable: true, get: function () { return MainStockRecord_1.MainStockRecord; } });
-Object.defineProperty(exports, "RecordSource", { enumerable: true, get: function () { return MainStockRecord_1.RecordSource; } });
-Object.defineProperty(exports, "RecordStatus", { enumerable: true, get: function () { return MainStockRecord_1.RecordStatus; } });
-var StockMovement_1 = require("./StockMovement");
-Object.defineProperty(exports, "StockMovement", { enumerable: true, get: function () { return StockMovement_1.StockMovement; } });
-Object.defineProperty(exports, "MovementType", { enumerable: true, get: function () { return StockMovement_1.MovementType; } });
-var Notification_1 = require("./Notification");
-Object.defineProperty(exports, "Notification", { enumerable: true, get: function () { return Notification_1.Notification; } });
-Object.defineProperty(exports, "NotificationType", { enumerable: true, get: function () { return Notification_1.NotificationType; } });
-Object.defineProperty(exports, "NotificationPriority", { enumerable: true, get: function () { return Notification_1.NotificationPriority; } });
-Object.defineProperty(exports, "createNotification", { enumerable: true, get: function () { return Notification_1.createNotification; } });
-var ActionLog_1 = require("./ActionLog");
-Object.defineProperty(exports, "ActionLog", { enumerable: true, get: function () { return ActionLog_1.ActionLog; } });
-Object.defineProperty(exports, "ActionType", { enumerable: true, get: function () { return ActionLog_1.ActionType; } });
-Object.defineProperty(exports, "ResourceType", { enumerable: true, get: function () { return ActionLog_1.ResourceType; } });
-var PurchaseOrder_1 = require("./PurchaseOrder");
-Object.defineProperty(exports, "PurchaseOrder", { enumerable: true, get: function () { return PurchaseOrder_1.PurchaseOrder; } });
-var Invoice_1 = require("./Invoice");
-Object.defineProperty(exports, "Invoice", { enumerable: true, get: function () { return Invoice_1.Invoice; } });
-var Supplier_1 = require("./Supplier");
-Object.defineProperty(exports, "Supplier", { enumerable: true, get: function () { return Supplier_1.Supplier; } });
-var Company_1 = require("./Company");
-Object.defineProperty(exports, "Company", { enumerable: true, get: function () { return Company_1.Company; } });
-var Client_1 = require("./Client");
-Object.defineProperty(exports, "Client", { enumerable: true, get: function () { return Client_1.Client; } });
-var DeliveryNote_1 = require("./DeliveryNote");
-Object.defineProperty(exports, "DeliveryNote", { enumerable: true, get: function () { return DeliveryNote_1.DeliveryNote; } });
-var PurchaseReturn_1 = require("./PurchaseReturn");
-Object.defineProperty(exports, "PurchaseReturn", { enumerable: true, get: function () { return PurchaseReturn_1.PurchaseReturn; } });
-var Quotation_1 = require("./Quotation");
-Object.defineProperty(exports, "Quotation", { enumerable: true, get: function () { return Quotation_1.Quotation; } });
+exports.RecordStatus = exports.RecordSource = exports.UserRole = exports.ResourceType = exports.ActionType = void 0;
+/**
+ * Compatibility re-exports. Runtime data access uses Prisma (`src/config/prisma`).
+ * Prefer importing ActionType/ResourceType from `services/actionLogService`
+ * and UserRole from `types`.
+ */
+var actionLogService_1 = require("../services/actionLogService");
+Object.defineProperty(exports, "ActionType", { enumerable: true, get: function () { return actionLogService_1.ActionType; } });
+Object.defineProperty(exports, "ResourceType", { enumerable: true, get: function () { return actionLogService_1.ResourceType; } });
+var types_1 = require("../types");
+Object.defineProperty(exports, "UserRole", { enumerable: true, get: function () { return types_1.UserRole; } });
+Object.defineProperty(exports, "RecordSource", { enumerable: true, get: function () { return types_1.RecordSource; } });
+Object.defineProperty(exports, "RecordStatus", { enumerable: true, get: function () { return types_1.RecordStatus; } });
 //# sourceMappingURL=index.js.map

@@ -5,20 +5,24 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateInvoiceNumber = void 0;
 const express_1 = require("express");
-const mongoose_1 = __importDefault(require("mongoose"));
-const models_1 = require("../models");
+const prisma_1 = __importDefault(require("../config/prisma"));
 const auth_1 = require("../middleware/auth");
 const actionLogService_1 = require("../services/actionLogService");
-const ActionLog_1 = require("../models/ActionLog");
+const actionLogService_2 = require("../services/actionLogService");
 const types_1 = require("../types");
 const router = (0, express_1.Router)();
 async function generateInvoiceNumber(company_id) {
     const year = new Date().getFullYear();
     const prefix = `INV-${year}-`;
-    const last = await models_1.Invoice.findOne({ company_id, invoiceNumber: { $regex: `^${prefix}` } }, { invoiceNumber: 1 }).sort({ invoiceNumber: -1 });
+    const last = await prisma_1.default.invoice.findFirst({
+        where: { companyId: company_id, invoiceNumber: { startsWith: prefix } },
+        orderBy: { invoiceNumber: 'desc' },
+        select: { invoiceNumber: true },
+    });
     let seq = 1;
-    if (last) {
-        const n = parseInt(last.invoiceNumber.split("-")[2], 10);
+    if (last && last.invoiceNumber) {
+        const parts = last.invoiceNumber.split("-");
+        const n = parseInt(parts[2], 10);
         if (!isNaN(n))
             seq = n + 1;
     }
@@ -32,14 +36,16 @@ function calculateTotals(items, taxRate = 0) {
     return { subTotal, taxRate, taxAmount, totalAmount };
 }
 function formatInvoice(invoice) {
+    const id = invoice.id || (invoice._id ? invoice._id.toString() : undefined);
+    const createdByName = invoice.createdBy?.name || invoice.createdByName || (invoice.createdBy && typeof invoice.createdBy === 'string' ? invoice.createdBy : undefined);
     return {
-        id: invoice._id.toString(),
+        id,
         invoiceNumber: invoice.invoiceNumber,
-        quotation_id: invoice.quotation_id?.toString(),
+        quotation_id: invoice.quotationId || invoice.quotation_id,
         qtNumber: invoice.qtNumber,
-        client_id: invoice.client_id?.toString(),
+        client_id: invoice.clientId || invoice.client_id,
         client: invoice.client,
-        site: invoice.site_id,
+        site: invoice.site || invoice.site_id || invoice.siteId,
         status: invoice.status,
         items: invoice.items,
         subTotal: invoice.subTotal,
@@ -54,9 +60,9 @@ function formatInvoice(invoice) {
         terms: invoice.terms,
         sentDate: invoice.sentDate,
         paidDate: invoice.paidDate,
-        createdBy: invoice.createdBy?.name || invoice.createdBy,
-        createdAt: invoice.createdAt,
-        updatedAt: invoice.updatedAt,
+        createdBy: createdByName,
+        createdAt: invoice.createdAt || invoice.createdAt,
+        updatedAt: invoice.updatedAt || invoice.updatedAt,
     };
 }
 function formatMoney(value) {
@@ -159,50 +165,42 @@ router.get("/", auth_1.authenticateToken, async (req, res) => {
     try {
         const company_id = req.user.company_id;
         const { status, client, clientId, siteId, startDate, endDate, page = "1", limit = "20" } = req.query;
-        const where = { company_id };
+        const where = { companyId: company_id };
         if (req.user.role === types_1.UserRole.SITE_MANAGER) {
             if (!req.assignedSiteIds?.length) {
                 res.json({ records: [], total: 0, page: 1, totalPages: 0 });
                 return;
             }
-            where.site_id = {
-                $in: req.assignedSiteIds
-                    .filter((id) => mongoose_1.default.Types.ObjectId.isValid(id))
-                    .map((id) => new mongoose_1.default.Types.ObjectId(id)),
-            };
+            where.siteId = { in: req.assignedSiteIds };
         }
         if (status && status !== "all")
             where.status = status;
         if (client)
-            where["client.name"] = { $regex: client, $options: "i" };
-        if (clientId && mongoose_1.default.Types.ObjectId.isValid(clientId))
-            where.client_id = new mongoose_1.default.Types.ObjectId(clientId);
-        if (siteId && mongoose_1.default.Types.ObjectId.isValid(siteId))
-            where.site_id = new mongoose_1.default.Types.ObjectId(siteId);
+            where.clientName = { contains: client, mode: 'insensitive' };
+        if (clientId)
+            where.clientId = clientId;
+        if (siteId)
+            where.siteId = siteId;
         if (startDate || endDate) {
             where.createdAt = {};
             if (startDate)
-                where.createdAt.$gte = new Date(startDate);
+                where.createdAt.gte = new Date(startDate);
             if (endDate)
-                where.createdAt.$lte = new Date(endDate);
+                where.createdAt.lte = new Date(endDate);
         }
         const pageNum = parseInt(page, 10) || 1;
         const limitNum = parseInt(limit, 10) || 20;
         const [records, total] = await Promise.all([
-            models_1.Invoice.find(where)
-                .sort({ createdAt: -1 })
-                .skip((pageNum - 1) * limitNum)
-                .limit(limitNum)
-                .populate("site_id", "name location")
-                .populate("createdBy", "name"),
-            models_1.Invoice.countDocuments(where),
+            prisma_1.default.invoice.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (pageNum - 1) * limitNum,
+                take: limitNum,
+                include: { site: { select: { name: true, location: true } }, createdBy: { select: { name: true } } },
+            }),
+            prisma_1.default.invoice.count({ where }),
         ]);
-        res.json({
-            records: records.map((invoice) => formatInvoice(invoice)),
-            total,
-            page: pageNum,
-            totalPages: Math.ceil(total / limitNum),
-        });
+        res.json({ records: records.map((inv) => formatInvoice(inv)), total, page: pageNum, totalPages: Math.ceil(total / limitNum) });
     }
     catch (err) {
         console.error("Get invoices error:", err);
@@ -212,23 +210,30 @@ router.get("/", auth_1.authenticateToken, async (req, res) => {
 router.get("/stats/overview", auth_1.authenticateToken, async (req, res) => {
     try {
         const company_id = req.user.company_id;
-        const byStatusRows = await models_1.Invoice.aggregate([
-            { $match: { company_id } },
-            { $group: { _id: "$status", count: { $sum: 1 }, value: { $sum: "$totalAmount" }, balanceDue: { $sum: "$balanceDue" } } },
-        ]);
+        const byStatusRows = await prisma_1.default.invoice.groupBy({
+            by: ['status'],
+            where: { companyId: company_id },
+            _count: { _all: true },
+            _sum: { totalAmount: true, balanceDue: true },
+        });
         const byStatus = {};
         byStatusRows.forEach((row) => {
-            byStatus[row._id] = { count: row.count, value: row.value, balanceDue: row.balanceDue };
+            byStatus[row.status] = {
+                count: row._count?._all || 0,
+                value: row._sum?.totalAmount || 0,
+                balanceDue: row._sum?.balanceDue || 0,
+            };
         });
-        const totals = await models_1.Invoice.aggregate([
-            { $match: { company_id } },
-            { $group: { _id: null, total: { $sum: 1 }, totalValue: { $sum: "$totalAmount" }, outstandingValue: { $sum: "$balanceDue" } } },
-        ]);
+        const totals = await prisma_1.default.invoice.aggregate({
+            where: { companyId: company_id },
+            _count: { _all: true },
+            _sum: { totalAmount: true, balanceDue: true },
+        });
         res.json({
-            total: totals[0]?.total || 0,
+            total: totals._count?._all || 0,
             byStatus,
-            totalValue: totals[0]?.totalValue || 0,
-            outstandingValue: totals[0]?.outstandingValue || 0,
+            totalValue: totals._sum?.totalAmount || 0,
+            outstandingValue: totals._sum?.balanceDue || 0,
         });
     }
     catch (err) {
@@ -239,17 +244,8 @@ router.get("/stats/overview", auth_1.authenticateToken, async (req, res) => {
 router.get("/:id", auth_1.authenticateToken, async (req, res) => {
     try {
         const id = String(req.params.id);
-        if (!mongoose_1.default.Types.ObjectId.isValid(id)) {
-            res.status(400).json({ error: "Invalid invoice ID" });
-            return;
-        }
-        const invoice = await models_1.Invoice.findOne({
-            _id: new mongoose_1.default.Types.ObjectId(id),
-            company_id: req.user.company_id,
-        })
-            .populate("site_id", "name location")
-            .populate("createdBy", "name");
-        if (!invoice) {
+        const invoice = await prisma_1.default.invoice.findUnique({ where: { id }, include: { site: true, createdBy: true } });
+        if (!invoice || invoice.companyId !== req.user.company_id) {
             res.status(404).json({ error: "Invoice not found" });
             return;
         }
@@ -268,13 +264,13 @@ router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async
             res.status(400).json({ error: "Client and items are required" });
             return;
         }
-        const client = await models_1.Client.findOne({ _id: new mongoose_1.default.Types.ObjectId(client_id), company_id }).lean();
+        const client = await prisma_1.default.client.findUnique({ where: { id: client_id } });
         if (!client) {
             res.status(404).json({ error: "Client not found" });
             return;
         }
         if (site_id) {
-            const site = await models_1.Site.findOne({ _id: new mongoose_1.default.Types.ObjectId(site_id), company_id });
+            const site = await prisma_1.default.site.findUnique({ where: { id: site_id } });
             if (!site) {
                 res.status(404).json({ error: "Site not found" });
                 return;
@@ -292,31 +288,29 @@ router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async
         }));
         const totals = calculateTotals(processedItems, taxRate);
         const invoiceNumber = await generateInvoiceNumber(company_id);
-        const invoice = (await models_1.Invoice.create({
-            invoiceNumber,
-            client_id: new mongoose_1.default.Types.ObjectId(client_id),
-            client: {
-                name: client.name,
-                contactPerson: client.contactPerson || "",
-                email: client.email || "",
-                phone: client.phone || "",
-                address: client.address || "",
-                taxId: client.taxId || "",
+        const invoice = await prisma_1.default.invoice.create({
+            data: {
+                invoiceNumber,
+                clientId: client_id,
+                client: client,
+                siteId: site_id || null,
+                status: 'draft',
+                items: processedItems,
+                subTotal: totals.subTotal,
+                taxRate: totals.taxRate,
+                taxAmount: totals.taxAmount,
+                totalAmount: totals.totalAmount,
+                amountPaid: 0,
+                balanceDue: totals.totalAmount,
+                issueDate: new Date(),
+                dueDate: dueDate ? new Date(dueDate) : undefined,
+                notes,
+                terms,
+                createdById: req.user.id,
+                companyId: company_id,
             },
-            site_id: site_id ? new mongoose_1.default.Types.ObjectId(site_id) : undefined,
-            status: "draft",
-            items: processedItems,
-            ...totals,
-            amountPaid: 0,
-            balanceDue: totals.totalAmount,
-            issueDate: new Date(),
-            dueDate: dueDate ? new Date(dueDate) : undefined,
-            notes,
-            terms,
-            createdBy: new mongoose_1.default.Types.ObjectId(req.user.id),
-            company_id,
-        }));
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.CREATE, ActionLog_1.ResourceType.INVOICE, `Created invoice ${invoiceNumber} for ${client.name}`, { resourceId: invoice._id.toString(), resourceName: invoiceNumber });
+        });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.CREATE, actionLogService_2.ResourceType.INVOICE, `Created invoice ${invoiceNumber} for ${client.name}`, { resourceId: invoice.id, resourceName: invoiceNumber });
         res.status(201).json({ ...formatInvoice(invoice), message: "Invoice created successfully" });
     }
     catch (err) {
@@ -326,8 +320,9 @@ router.post("/", auth_1.authenticateToken, auth_1.requireMainStockManager, async
 });
 router.patch("/:id/send", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
-        const invoice = await models_1.Invoice.findOne({ _id: new mongoose_1.default.Types.ObjectId(String(req.params.id)), company_id: req.user.company_id });
-        if (!invoice) {
+        const id = String(req.params.id);
+        const invoice = await prisma_1.default.invoice.findUnique({ where: { id } });
+        if (!invoice || invoice.companyId !== req.user.company_id) {
             res.status(404).json({ error: "Invoice not found" });
             return;
         }
@@ -335,14 +330,12 @@ router.patch("/:id/send", auth_1.authenticateToken, auth_1.requireMainStockManag
             res.status(400).json({ error: "Only draft invoices can be sent" });
             return;
         }
-        invoice.status = "sent";
-        invoice.sentDate = new Date();
-        await invoice.save();
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.INVOICE, `Sent invoice ${invoice.invoiceNumber}`, {
-            resourceId: invoice._id.toString(),
-            resourceName: invoice.invoiceNumber,
+        const updated = await prisma_1.default.invoice.update({ where: { id }, data: { status: 'sent', sentDate: new Date() }, include: { site: true, createdBy: true } });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.INVOICE, `Sent invoice ${updated.invoiceNumber}`, {
+            resourceId: updated.id,
+            resourceName: updated.invoiceNumber,
         });
-        res.json({ ...formatInvoice(invoice), message: "Invoice sent" });
+        res.json({ ...formatInvoice(updated), message: "Invoice sent" });
     }
     catch (err) {
         console.error("Send invoice error:", err);
@@ -351,8 +344,9 @@ router.patch("/:id/send", auth_1.authenticateToken, auth_1.requireMainStockManag
 });
 router.patch("/:id/pay", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
-        const invoice = await models_1.Invoice.findOne({ _id: new mongoose_1.default.Types.ObjectId(String(req.params.id)), company_id: req.user.company_id });
-        if (!invoice) {
+        const id = String(req.params.id);
+        const invoice = await prisma_1.default.invoice.findUnique({ where: { id } });
+        if (!invoice || invoice.companyId !== req.user.company_id) {
             res.status(404).json({ error: "Invoice not found" });
             return;
         }
@@ -365,18 +359,17 @@ router.patch("/:id/pay", auth_1.authenticateToken, auth_1.requireMainStockManage
             res.status(400).json({ error: "Invalid paid amount" });
             return;
         }
-        invoice.amountPaid = amountPaid;
-        invoice.balanceDue = Math.max(invoice.totalAmount - amountPaid, 0);
-        if (invoice.balanceDue === 0) {
-            invoice.status = "paid";
-            invoice.paidDate = new Date();
+        const data = { amountPaid, balanceDue: Math.max(invoice.totalAmount - amountPaid, 0) };
+        if (data.balanceDue === 0) {
+            data.status = 'paid';
+            data.paidDate = new Date();
         }
-        await invoice.save();
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.INVOICE, `Recorded payment for invoice ${invoice.invoiceNumber}`, {
-            resourceId: invoice._id.toString(),
-            resourceName: invoice.invoiceNumber,
+        const updated = await prisma_1.default.invoice.update({ where: { id }, data, include: { site: true, createdBy: true } });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.INVOICE, `Recorded payment for invoice ${updated.invoiceNumber}`, {
+            resourceId: updated.id,
+            resourceName: updated.invoiceNumber,
         });
-        res.json({ ...formatInvoice(invoice), message: "Invoice payment recorded" });
+        res.json({ ...formatInvoice(updated), message: "Invoice payment recorded" });
     }
     catch (err) {
         console.error("Pay invoice error:", err);
@@ -385,8 +378,9 @@ router.patch("/:id/pay", auth_1.authenticateToken, auth_1.requireMainStockManage
 });
 router.patch("/:id/cancel", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
-        const invoice = await models_1.Invoice.findOne({ _id: new mongoose_1.default.Types.ObjectId(String(req.params.id)), company_id: req.user.company_id });
-        if (!invoice) {
+        const id = String(req.params.id);
+        const invoice = await prisma_1.default.invoice.findUnique({ where: { id } });
+        if (!invoice || invoice.companyId !== req.user.company_id) {
             res.status(404).json({ error: "Invoice not found" });
             return;
         }
@@ -394,13 +388,12 @@ router.patch("/:id/cancel", auth_1.authenticateToken, auth_1.requireMainStockMan
             res.status(400).json({ error: "Paid invoices cannot be cancelled" });
             return;
         }
-        invoice.status = "cancelled";
-        await invoice.save();
-        await actionLogService_1.ActionLogService.logFromRequest(req, ActionLog_1.ActionType.UPDATE, ActionLog_1.ResourceType.INVOICE, `Cancelled invoice ${invoice.invoiceNumber}`, {
-            resourceId: invoice._id.toString(),
-            resourceName: invoice.invoiceNumber,
+        const updated = await prisma_1.default.invoice.update({ where: { id }, data: { status: 'cancelled' }, include: { site: true, createdBy: true } });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.INVOICE, `Cancelled invoice ${updated.invoiceNumber}`, {
+            resourceId: updated.id,
+            resourceName: updated.invoiceNumber,
         });
-        res.json({ ...formatInvoice(invoice), message: "Invoice cancelled" });
+        res.json({ ...formatInvoice(updated), message: "Invoice cancelled" });
     }
     catch (err) {
         console.error("Cancel invoice error:", err);
@@ -409,15 +402,13 @@ router.patch("/:id/cancel", auth_1.authenticateToken, auth_1.requireMainStockMan
 });
 router.get("/:id/pdf", auth_1.authenticateToken, async (req, res) => {
     try {
-        const invoice = await models_1.Invoice.findOne({
-            _id: new mongoose_1.default.Types.ObjectId(String(req.params.id)),
-            company_id: req.user.company_id,
-        }).populate("site_id", "name location");
-        if (!invoice) {
+        const id = String(req.params.id);
+        const invoice = await prisma_1.default.invoice.findUnique({ where: { id }, include: { site: true } });
+        if (!invoice || invoice.companyId !== req.user.company_id) {
             res.status(404).json({ error: "Invoice not found" });
             return;
         }
-        const company = await models_1.Company.findOne({ _id: req.user.company_id }).lean();
+        const company = await prisma_1.default.company.findUnique({ where: { id: req.user.company_id } });
         res.setHeader("Content-Type", "text/html");
         res.send(buildInvoiceHtml(invoice, company));
     }

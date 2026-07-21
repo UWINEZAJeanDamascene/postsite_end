@@ -1,8 +1,9 @@
 import { Router } from 'express';
+import prisma from '../config/prisma';
 import { authenticateToken } from '../middleware/auth';
-import { ActionLog, ActionType, ResourceType } from '../models/ActionLog';
-import { UserRole } from '../models/User';
-import mongoose from 'mongoose';
+import { ActionType, ResourceType } from '../services/actionLogService';
+import { UserRole } from '../types';
+import { toApiEnum, toPrismaEnum } from '../utils/apiEnums';
 
 const router = Router();
 
@@ -11,7 +12,6 @@ console.log('Action logs routes loaded');
 // Get all action logs (main managers only)
 router.get('/', authenticateToken, async (req, res): Promise<void> => {
   try {
-    // Only main managers can view action logs
     if (req.user!.role !== UserRole.MAIN_MANAGER) {
       res.status(403).json({ error: 'Access denied. Main manager role required.' });
       return;
@@ -29,58 +29,64 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
       search,
     } = req.query;
 
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
+    const pageNum = parseInt(page as string, 10) || 1;
+    const limitNum = parseInt(limit as string, 10) || 20;
     const skip = (pageNum - 1) * limitNum;
 
-    // Build query
-    let query: any = { companyId };
+    const where: any = { companyId };
 
-    if (action && Object.values(ActionType).includes(action as ActionType)) {
-      query.action = action;
+    if (action) {
+      const prismaAction = toPrismaEnum(String(action));
+      if (prismaAction && Object.values(ActionType).includes(prismaAction as ActionType)) {
+        where.action = prismaAction as ActionType;
+      }
     }
 
-    if (resource && Object.values(ResourceType).includes(resource as ResourceType)) {
-      query.resource = resource;
+    if (resource) {
+      const prismaResource = toPrismaEnum(String(resource));
+      if (prismaResource && Object.values(ResourceType).includes(prismaResource as ResourceType)) {
+        where.resource = prismaResource as ResourceType;
+      }
     }
 
-    if (userId && mongoose.Types.ObjectId.isValid(userId as string)) {
-      query.userId = new mongoose.Types.ObjectId(userId as string);
+    if (userId) {
+      where.userId = userId as string;
     }
 
     if (startDate || endDate) {
-      query.timestamp = {};
-      if (startDate) query.timestamp.$gte = new Date(startDate as string);
-      if (endDate) query.timestamp.$lte = new Date(endDate as string);
+      where.timestamp = {};
+      if (startDate) where.timestamp.gte = new Date(startDate as string);
+      if (endDate) where.timestamp.lte = new Date(endDate as string);
     }
 
     if (search) {
-      query.$or = [
-        { description: { $regex: search, $options: 'i' } },
-        { userName: { $regex: search, $options: 'i' } },
-        { userEmail: { $regex: search, $options: 'i' } },
-        { resourceName: { $regex: search, $options: 'i' } },
+      where.OR = [
+        { description: { contains: String(search), mode: 'insensitive' } },
+        { userName: { contains: String(search), mode: 'insensitive' } },
+        { userEmail: { contains: String(search), mode: 'insensitive' } },
+        { resourceName: { contains: String(search), mode: 'insensitive' } },
       ];
     }
 
     const [logs, total] = await Promise.all([
-      ActionLog.find(query)
-        .sort({ timestamp: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-      ActionLog.countDocuments(query),
+      prisma.actionLog.findMany({
+        where,
+        orderBy: { timestamp: 'desc' },
+        skip,
+        take: limitNum,
+      }),
+      prisma.actionLog.count({ where }),
     ]);
 
     res.json({
       logs: logs.map((log) => ({
-        id: log._id.toString(),
-        userId: log.userId.toString(),
+        id: log.id,
+        userId: log.userId,
         userName: log.userName,
         userEmail: log.userEmail,
         userRole: log.userRole,
-        action: log.action,
-        resource: log.resource,
+        action: toApiEnum(log.action),
+        resource: toApiEnum(log.resource),
         resourceId: log.resourceId,
         resourceName: log.resourceName,
         description: log.description,
@@ -109,52 +115,44 @@ router.get('/stats', authenticateToken, async (req, res): Promise<void> => {
     const companyId = req.user!.company_id;
     const { startDate, endDate } = req.query;
 
-    let dateFilter: any = {};
+    const where: any = { companyId };
     if (startDate || endDate) {
-      dateFilter.timestamp = {};
-      if (startDate) dateFilter.timestamp.$gte = new Date(startDate as string);
-      if (endDate) dateFilter.timestamp.$lte = new Date(endDate as string);
+      where.timestamp = {};
+      if (startDate) where.timestamp.gte = new Date(startDate as string);
+      if (endDate) where.timestamp.lte = new Date(endDate as string);
     }
 
     const [actionStats, resourceStats, recentActivity, totalCount] = await Promise.all([
-      // Actions by type
-      ActionLog.aggregate([
-        { $match: { companyId, ...dateFilter } },
-        { $group: { _id: '$action', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-      ]),
-      // Actions by resource
-      ActionLog.aggregate([
-        { $match: { companyId, ...dateFilter } },
-        { $group: { _id: '$resource', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-      ]),
-      // Recent activity (top users)
-      ActionLog.aggregate([
-        { $match: { companyId, ...dateFilter } },
-        {
-          $group: {
-            _id: '$userId',
-            userName: { $first: '$userName' },
-            userEmail: { $first: '$userEmail' },
-            count: { $sum: 1 },
-          },
-        },
-        { $sort: { count: -1 } },
-        { $limit: 5 },
-      ]),
-      // Total count
-      ActionLog.countDocuments({ companyId, ...dateFilter }),
+      prisma.actionLog.groupBy({
+        by: ['action'],
+        where,
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+      }),
+      prisma.actionLog.groupBy({
+        by: ['resource'],
+        where,
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+      }),
+      prisma.actionLog.groupBy({
+        by: ['userId', 'userName', 'userEmail'],
+        where,
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } },
+        take: 5,
+      }),
+      prisma.actionLog.count({ where }),
     ]);
 
     res.json({
-      actionStats: actionStats.map((s) => ({ action: s._id, count: s.count })),
-      resourceStats: resourceStats.map((s) => ({ resource: s._id, count: s.count })),
+      actionStats: actionStats.map((s) => ({ action: toApiEnum(s.action), count: s._count?.id ?? 0 })),
+      resourceStats: resourceStats.map((s) => ({ resource: toApiEnum(s.resource), count: s._count?.id ?? 0 })),
       topUsers: recentActivity.map((u) => ({
-        userId: u._id.toString(),
+        userId: u.userId,
         userName: u.userName,
         userEmail: u.userEmail,
-        actionCount: u.count,
+        actionCount: u._count?.id ?? 0,
       })),
       totalActions: totalCount,
     });
@@ -176,29 +174,20 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
     const companyId = req.user!.company_id;
     const idStr = Array.isArray(id) ? id[0] : id;
 
-    if (!mongoose.Types.ObjectId.isValid(idStr)) {
-      res.status(400).json({ error: 'Invalid log ID' });
-      return;
-    }
-
-    const log = await ActionLog.findOne({
-      _id: new mongoose.Types.ObjectId(idStr),
-      companyId,
-    }).lean();
-
-    if (!log) {
+    const log = await prisma.actionLog.findUnique({ where: { id: idStr } });
+    if (!log || log.companyId !== companyId) {
       res.status(404).json({ error: 'Log not found' });
       return;
     }
 
     res.json({
-      id: log._id.toString(),
-      userId: log.userId.toString(),
+      id: log.id,
+      userId: log.userId,
       userName: log.userName,
       userEmail: log.userEmail,
       userRole: log.userRole,
-      action: log.action,
-      resource: log.resource,
+      action: toApiEnum(log.action),
+      resource: toApiEnum(log.resource),
       resourceId: log.resourceId,
       resourceName: log.resourceName,
       description: log.description,

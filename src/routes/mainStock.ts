@@ -1,51 +1,86 @@
 import { Router } from 'express';
 import { authenticateToken, requireMainStockManager } from '../middleware/auth';
+import prisma from '../config/prisma';
 import { broadcastToClients } from '../websocket/server';
-import MainStockRecord, { RecordSource, RecordStatus } from '../models/MainStockRecord';
-import StockMovement from '../models/StockMovement';
-import Site from '../models/Site';
-import { ActionLogService } from '../services/actionLogService';
-import { ActionType, ResourceType } from '../models/ActionLog';
-import { NotificationService } from '../services/notificationService';
-import mongoose from 'mongoose';
+import { ActionLogService, ActionType, ResourceType } from '../services/actionLogService';
 
 const router = Router();
 
-// Get all main stock records (main stock manager only)
+function normalizeParam(param: string | string[] | undefined): string | undefined {
+  if (!param) return undefined;
+  return Array.isArray(param) ? param[0] : param;
+}
+
+function getMaterialName(record: any) {
+  return record.material?.name ?? record.materialId ?? 'Unknown material';
+}
+
+function mapMainStockRecord(record: any) {
+  return {
+    id: record.id,
+    source: record.source,
+    siteSource: record.siteSource,
+    siteId: record.siteId,
+    materialId: record.materialId,
+    materialName: getMaterialName(record),
+    quantityReceived: record.quantityReceived,
+    quantityUsed: record.quantityUsed,
+    price: record.price,
+    totalValue: record.totalValue,
+    date: record.date,
+    status: record.status,
+    notes: record.notes,
+    recordedBy: record.createdById,
+    companyId: record.companyId,
+    sourceRecordId: record.sourceRecordId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
 router.get('/', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
     const { siteId, materialName, source, status, startDate, endDate, page = '1', limit = '10' } = req.query;
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
+    const where: any = { companyId };
 
-    let where: any = { company_id };
-
-    if (siteId) where.site_id = new mongoose.Types.ObjectId(siteId as string);
-    if (materialName) where.materialName = { $regex: materialName, $options: 'i' };
-    if (source && source !== 'all') where.source = source;
-    if (status && status !== 'all') where.status = status;
-
+    if (siteId && typeof siteId === 'string') {
+      where.siteId = siteId;
+    }
+    if (materialName && typeof materialName === 'string') {
+      where.materialName = { contains: materialName, mode: 'insensitive' };
+    }
+    if (source && typeof source === 'string' && source !== 'all') {
+      where.source = source;
+    }
+    if (status && typeof status === 'string' && status !== 'all') {
+      where.status = status;
+    }
     if (startDate || endDate) {
       where.date = {};
-      if (startDate) where.date.$gte = new Date(startDate as string);
-      if (endDate) where.date.$lte = new Date(endDate as string);
+      if (startDate && typeof startDate === 'string') where.date.gte = new Date(startDate);
+      if (endDate && typeof endDate === 'string') where.date.lte = new Date(endDate);
     }
 
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const recordsLimit = parseInt(limit as string);
+    const pageNum = Math.max(1, parseInt(page as string, 10));
+    const limitNum = Math.max(1, parseInt(limit as string, 10));
+    const skip = (pageNum - 1) * limitNum;
 
-    const records = await MainStockRecord.find(where)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(recordsLimit);
-
-    const total = await MainStockRecord.countDocuments(where);
-    const totalPages = Math.ceil(total / recordsLimit);
+    const [records, total] = await Promise.all([
+      prisma.mainStockRecord.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limitNum,
+      }),
+      prisma.mainStockRecord.count({ where }),
+    ]);
 
     res.json({
-      records,
+      records: records.map(mapMainStockRecord),
       total,
-      page: parseInt(page as string),
-      totalPages,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum),
     });
   } catch (error) {
     console.error('Get main stock records error:', error);
@@ -53,28 +88,24 @@ router.get('/', authenticateToken, requireMainStockManager, async (req, res): Pr
   }
 });
 
-// Dashboard stats endpoint
 router.get('/dashboard-stats', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const [pendingCount, activeSites, directRecords, totalStockValue] = await Promise.all([
-      MainStockRecord.countDocuments({ company_id, status: RecordStatus.PENDING_PRICE }),
-      // Count active sites for this company
-      Site.countDocuments({ company_id, isActive: true }),
-      MainStockRecord.countDocuments({ 
-        company_id, 
-        source: RecordSource.DIRECT,
-        date: { $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }
+      prisma.mainStockRecord.count({ where: { companyId, source: 'SITE', status: 'PENDING_PRICE' } }),
+      prisma.site.count({ where: { companyId, isActive: true } }),
+      prisma.mainStockRecord.count({ where: { companyId, source: 'DIRECT', date: { gte: startOfMonth } } }),
+      prisma.mainStockRecord.aggregate({
+        _sum: { totalValue: true },
+        where: { companyId, totalValue: { not: null } },
       }),
-      MainStockRecord.aggregate([
-        { $match: { company_id, totalValue: { $ne: null } } },
-        { $group: { _id: null, total: { $sum: '$totalValue' } } }
-      ]),
     ]);
 
     res.json({
-      totalStockValue: totalStockValue[0]?.total || 0,
+      totalStockValue: Number(totalStockValue._sum.totalValue ?? 0),
       pendingPricingCount: pendingCount,
       activeSitesCount: activeSites,
       directRecordsThisMonth: directRecords,
@@ -85,62 +116,69 @@ router.get('/dashboard-stats', authenticateToken, requireMainStockManager, async
   }
 });
 
-// Top materials by quantity received
 router.get('/top-materials', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
     const limit = parseInt(req.query.limit as string) || 10;
 
-    const materials = await MainStockRecord.aggregate([
-      { $match: { company_id } },
-      { $group: { _id: '$materialName', quantityReceived: { $sum: '$quantityReceived' } } },
-      { $sort: { quantityReceived: -1 } },
-      { $limit: limit },
-      { $project: { materialName: '$_id', quantityReceived: 1, _id: 0 } },
-    ]);
+    const materials = await prisma.mainStockRecord.groupBy({
+      by: ['materialId'] as const,
+      where: { companyId, materialId: { not: null } },
+      _sum: { quantityReceived: true },
+      orderBy: { _sum: { quantityReceived: 'desc' } },
+      take: limit,
+    });
 
-    res.json(materials);
+    const materialIds = materials.map(item => item.materialId!).filter(Boolean);
+    const materialRecords = await prisma.material.findMany({
+      where: { id: { in: materialIds } },
+    });
+    const materialMap = new Map(materialRecords.map(m => [m.id, m.name]));
+
+    res.json(materials.map(item => ({
+      materialId: item.materialId,
+      materialName: materialMap.get(item.materialId!) ?? 'Unknown material',
+      quantityReceived: item._sum?.quantityReceived ?? 0,
+    })));
   } catch (error) {
     console.error('Top materials error:', error);
     res.status(500).json({ error: 'Failed to fetch top materials' });
   }
 });
 
-// Stock movements over time (for line chart)
 router.get('/movements', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
     const days = parseInt(req.query.days as string) || 30;
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    startDate.setDate(startDate.getDate() - days + 1);
 
-    // Get aggregated movements with material names
-    const movements = await MainStockRecord.aggregate([
-      { $match: { company_id, date: { $gte: startDate } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-          received: { $sum: '$quantityReceived' },
-          used: { $sum: '$quantityUsed' },
-          materials: { $push: { name: '$materialName', qty: '$quantityReceived' } },
-        },
-      },
-      { $sort: { _id: 1 } },
-      { $project: { date: '$_id', received: 1, used: 1, materials: 1, _id: 0 } },
-    ]);
+    const records = await prisma.mainStockRecord.findMany({
+      where: { companyId, date: { gte: startDate } },
+      select: { date: true, quantityReceived: true, quantityUsed: true, materialId: true, material: { select: { name: true } } },
+    });
 
-    // Fill in missing dates with zeros
+    const grouped = new Map<string, { received: number; used: number; materials: { name: string; qty: number }[] }>;
+    records.forEach(record => {
+      const dateStr = record.date.toISOString().split('T')[0];
+      const existing = grouped.get(dateStr) ?? { received: 0, used: 0, materials: [] };
+      existing.received += record.quantityReceived;
+      existing.used += record.quantityUsed;
+      existing.materials.push({ name: record.material?.name ?? record.materialId ?? 'Unknown material', qty: record.quantityReceived });
+      grouped.set(dateStr, existing);
+    });
+
     const result = [];
-    for (let i = 0; i < days; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - (days - 1 - i));
-      const dateStr = d.toISOString().split('T')[0];
-      const existing = movements.find(m => m.date === dateStr);
+    for (let i = 0; i < days; i += 1) {
+      const date = new Date();
+      date.setDate(date.getDate() - (days - 1 - i));
+      const dateStr = date.toISOString().split('T')[0];
+      const existing = grouped.get(dateStr);
       result.push({
         date: dateStr,
-        received: existing?.received || 0,
-        used: existing?.used || 0,
-        materials: existing?.materials || [],
+        received: existing?.received ?? 0,
+        used: existing?.used ?? 0,
+        materials: existing?.materials ?? [],
       });
     }
 
@@ -151,116 +189,104 @@ router.get('/movements', authenticateToken, requireMainStockManager, async (req,
   }
 });
 
-// Get single main stock record
 router.get('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
 
-    const record = await MainStockRecord.findById(id);
-
+    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
 
-    res.json(record);
+    res.json(mapMainStockRecord(record));
   } catch (error) {
     console.error('Get main stock record error:', error);
     res.status(500).json({ error: 'Failed to fetch main stock record' });
   }
 });
 
-// Create direct main stock record (non-site purchase)
 router.post('/direct', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const {
-      materialName,
-      material_id,
-      quantityReceived,
-      quantityUsed,
-      price,
-      date,
-      notes,
-    } = req.body;
+    const { materialName, material_id, quantityReceived, quantityUsed, price, date, notes } = req.body;
 
-    if (!materialName || !date) {
-      res.status(400).json({
-        error: 'Material and date are required',
-      });
+    if (!date) {
+      res.status(400).json({ error: 'Date is required' });
       return;
     }
 
-    // Calculate total value if price is provided
-    const totalValue = price != null && quantityReceived != null
-      ? price * quantityReceived
-      : null;
+    if (!materialName) {
+      res.status(400).json({ error: 'Material name is required' });
+      return;
+    }
 
-    const record = new MainStockRecord({
-      source: RecordSource.DIRECT,
-      materialName,
-      material_id: material_id ? new mongoose.Types.ObjectId(material_id) : undefined,
-      quantityReceived: quantityReceived || 0,
-      quantityUsed: quantityUsed || 0,
-      price: price || null,
-      totalValue,
-      date: new Date(date),
-      status: RecordStatus.DIRECT,
-      notes,
-      recordedBy: new mongoose.Types.ObjectId(req.user!.id),
-      company_id: req.user!.company_id,
+    const totalValue = price != null && quantityReceived != null ? price * quantityReceived : null;
+    const record = await prisma.mainStockRecord.create({
+      data: {
+        source: 'DIRECT',
+        siteSource: 'Direct',
+        materialName,
+        materialId: material_id || null,
+        quantityReceived: quantityReceived || 0,
+        quantityUsed: quantityUsed || 0,
+        price: price ?? null,
+        totalValue,
+        date: new Date(date),
+        status: 'DIRECT',
+        notes,
+        createdById: req.user!.id,
+        companyId: req.user!.company_id,
+        isDirectEntry: true,
+      },
+      include: { material: true },
     });
 
-    await record.save();
+    await ActionLogService.logFromRequest(req, ActionType.CREATE, ResourceType.MAIN_STOCK, `Created main stock record: ${getMaterialName(record)}`, {
+      resourceId: record.id,
+      resourceName: getMaterialName(record),
+      details: {
+        quantityReceived: record.quantityReceived,
+        quantityUsed: record.quantityUsed,
+        price: record.price,
+        totalValue: record.totalValue,
+        date: record.date,
+        notes: record.notes,
+        source: record.source,
+      },
+    });
 
-    // Log main stock record creation (pass minimal details)
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.CREATE,
-      ResourceType.MAIN_STOCK,
-      `Created main stock record: ${record.materialName}`,
-      {
-        resourceId: record._id.toString(),
-        resourceName: record.materialName,
-        details: {
-          quantityReceived: record.quantityReceived,
-          quantityUsed: record.quantityUsed,
-          price: record.price,
-          totalValue: record.totalValue,
-          date: record.date,
-          notes: record.notes,
-          source: record.source,
-          siteId: record.site_id,
-        },
-      }
-    );
-
-    // Broadcast update
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
       payload: { mainStockRecord: record },
       timestamp: new Date(),
     });
 
-    res.status(201).json(record);
+    res.status(201).json(mapMainStockRecord(record));
   } catch (error) {
     console.error('Create main stock record error:', error);
     res.status(500).json({ error: 'Failed to create main stock record' });
   }
 });
 
-// Update price for a main stock record (PATCH endpoint for inline editing)
 router.patch('/:id/price', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
     const { price } = req.body;
 
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
     if (price === undefined || price === null || price < 0) {
       res.status(400).json({ error: 'Valid price is required' });
       return;
     }
 
-    const record = await MainStockRecord.findById(id);
-
+    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
@@ -268,198 +294,156 @@ router.patch('/:id/price', authenticateToken, requireMainStockManager, async (re
 
     const previousPrice = record.price;
     const totalValue = price * record.quantityReceived;
+    const updatedRecord = await prisma.mainStockRecord.update({
+      where: { id },
+      data: {
+        price,
+        totalValue,
+        status: record.status === 'PENDING_PRICE' ? 'PRICED' : record.status,
+      },
+    });
 
-    // Update the record
-    record.price = price;
-    record.totalValue = totalValue;
-    
-    // Update status if it was pending price
-    if (record.status === RecordStatus.PENDING_PRICE) {
-      record.status = RecordStatus.PRICED;
-    }
+    await ActionLogService.logPriceUpdate(req, updatedRecord.id, getMaterialName(updatedRecord), previousPrice ?? null, price);
 
-    await record.save();
-
-    // Log price update
-    await ActionLogService.logPriceUpdate(req, record._id.toString(), record.materialName, previousPrice || null, price);
-
-    // Broadcast update
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
-      payload: { mainStockRecord: record, priceUpdate: { previousPrice, newPrice: price } },
+      payload: { mainStockRecord: updatedRecord, priceUpdate: { previousPrice, newPrice: price } },
       timestamp: new Date(),
     });
 
-    res.json(record);
+    res.json(mapMainStockRecord(updatedRecord));
   } catch (error) {
     console.error('Update price error:', error);
     res.status(500).json({ error: 'Failed to update price' });
   }
 });
 
-// Mark record as received (change status from DIRECT to PRICED)
 router.patch('/:id/receive', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
     const { price } = req.body;
 
-    const record = await MainStockRecord.findById(id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
+
+    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
 
-    // Verify ownership
-    if (record.company_id.toString() !== req.user!.company_id) {
+    if (record.companyId !== req.user!.company_id) {
       res.status(403).json({ error: 'Not authorized to update this record' });
       return;
     }
 
-    // Update status to PRICED
-    record.status = RecordStatus.PRICED;
-    
-    // Optionally set price if provided
-    if (price && price > 0) {
-      record.price = price;
-      record.totalValue = record.quantityReceived * price;
-    }
+    const newPrice = price && price > 0 ? price : record.price;
+    const totalValue = newPrice != null ? record.quantityReceived * newPrice : record.totalValue;
 
-    await record.save();
-
-    // Log the action
-    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.MAIN_STOCK, 
-      `Marked record as received: ${record.materialName}`, {
-      resourceId: record._id.toString(),
-      resourceName: record.materialName,
+    const updatedRecord = await prisma.mainStockRecord.update({
+      where: { id },
+      data: {
+        status: 'PRICED',
+        price: newPrice,
+        totalValue,
+      },
     });
 
-    // Broadcast update
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.MAIN_STOCK, `Marked record as received: ${getMaterialName(record)}`, {
+      resourceId: record.id,
+      resourceName: getMaterialName(record),
+    });
+
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
-      payload: { mainStockRecord: record },
+      payload: { mainStockRecord: updatedRecord },
       timestamp: new Date(),
     });
 
-    res.json(record);
+    res.json(mapMainStockRecord(updatedRecord));
   } catch (error) {
     console.error('Mark as received error:', error);
     res.status(500).json({ error: 'Failed to mark record as received' });
   }
 });
 
-// Update main stock record (full update)
 router.put('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
-    const {
-      materialName,
-      quantityReceived,
-      quantityUsed,
-      price,
-      date,
-      status,
-      notes,
-    } = req.body;
+    const id = normalizeParam(req.params.id);
+const { materialId, quantityReceived, quantityUsed, price, date, status, notes } = req.body;
 
-    const record = await MainStockRecord.findById(id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
 
+    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
 
-    // Build updateData for logging
     const updateData: any = {};
+    if (materialId) updateData.materialId = materialId;
+    if (quantityReceived !== undefined) updateData.quantityReceived = quantityReceived;
+    if (quantityUsed !== undefined) updateData.quantityUsed = quantityUsed;
+    if (price !== undefined) updateData.price = price;
+    if (status) updateData.status = status;
+    if (notes !== undefined) updateData.notes = notes;
+    if (date) updateData.date = new Date(date);
 
-    // Update fields and track what changed
-    if (materialName) {
-      record.materialName = materialName;
-      updateData.materialName = materialName;
-    }
-    if (quantityReceived !== undefined) {
-      record.quantityReceived = quantityReceived;
-      updateData.quantityReceived = quantityReceived;
-    }
-    if (quantityUsed !== undefined) {
-      record.quantityUsed = quantityUsed;
-      updateData.quantityUsed = quantityUsed;
-    }
-    if (price !== undefined) {
-      record.price = price;
-      updateData.price = price;
-    }
-    if (status) {
-      record.status = status;
-      updateData.status = status;
-    }
-    if (notes !== undefined) {
-      record.notes = notes;
-      updateData.notes = notes;
-    }
-    if (date) {
-      record.date = new Date(date);
-      updateData.date = date;
-    }
-
-    // Recalculate total value
-    if (record.price != null && record.quantityReceived != null) {
-      record.totalValue = record.price * record.quantityReceived;
-    }
-
-    await record.save();
-
-    // Log main stock record update
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.UPDATE,
-      ResourceType.MAIN_STOCK,
-      `Updated main stock record: ${record.materialName}`,
-      {
-        resourceId: record._id.toString(),
-        resourceName: record.materialName,
-        details: updateData,
+    if (updateData.price !== undefined || updateData.quantityReceived !== undefined) {
+      const nextPrice = updateData.price !== undefined ? updateData.price : record.price;
+      const nextQuantity = updateData.quantityReceived !== undefined ? updateData.quantityReceived : record.quantityReceived;
+      if (nextPrice != null && nextQuantity != null) {
+        updateData.totalValue = nextPrice * nextQuantity;
       }
-    );
+    }
 
-    // Broadcast update
+    const updatedRecord = await prisma.mainStockRecord.update({ where: { id }, data: updateData });
+
+    await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.MAIN_STOCK, `Updated main stock record: ${getMaterialName(updatedRecord)}`, {
+      resourceId: updatedRecord.id,
+      resourceName: getMaterialName(updatedRecord),
+      details: updateData,
+    });
+
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
-      payload: { mainStockRecord: record },
+      payload: { mainStockRecord: updatedRecord },
       timestamp: new Date(),
     });
 
-    res.json(record);
+    res.json(mapMainStockRecord(updatedRecord));
   } catch (error) {
     console.error('Update main stock record error:', error);
     res.status(500).json({ error: 'Failed to update main stock record' });
   }
 });
 
-// Delete main stock record
 router.delete('/:id', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
 
-    const record = await MainStockRecord.findByIdAndDelete(id);
-
+    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
     }
 
-    // Log main stock record deletion
-    await ActionLogService.logFromRequest(
-      req,
-      ActionType.DELETE,
-      ResourceType.MAIN_STOCK,
-      `Deleted main stock record: ${record.materialName}`,
-      {
-        resourceId: record._id.toString(),
-        resourceName: record.materialName,
-      }
-    );
+    await prisma.mainStockRecord.delete({ where: { id } });
 
-    // Broadcast update - views will need to recalculate
+    await ActionLogService.logFromRequest(req, ActionType.DELETE, ResourceType.MAIN_STOCK, `Deleted main stock record: ${getMaterialName(record)}`, {
+      resourceId: record.id,
+      resourceName: getMaterialName(record),
+    });
+
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
       payload: { deletedRecordId: id },
@@ -473,27 +457,40 @@ router.delete('/:id', authenticateToken, requireMainStockManager, async (req, re
   }
 });
 
-// Get site-sourced records that need pricing (price is null)
 router.get('/pending-pricing/all', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const company_id = req.user!.company_id;
+    const companyId = req.user!.company_id;
+    const records = await prisma.mainStockRecord.findMany({
+      where: { companyId, source: 'SITE', status: 'PENDING_PRICE' },
+      include: { site: true, material: true },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    const records = await MainStockRecord.find({
-      company_id,
-      source: RecordSource.SITE,
-      status: RecordStatus.PENDING_PRICE,
-    })
-      .sort({ createdAt: -1 })
-      .populate('site_id', 'name');
-
-    res.json(records);
+    res.json(records.map(record => ({
+      id: record.id,
+      source: record.source,
+      materialName: getMaterialName(record),
+      quantityReceived: record.quantityReceived,
+      quantityUsed: record.quantityUsed,
+      price: record.price,
+      totalValue: record.totalValue,
+      date: record.date,
+      status: record.status,
+      notes: record.notes,
+      recordedBy: record.createdById,
+      companyId: record.companyId,
+      siteId: record.siteId,
+      siteName: record.site?.name,
+      sourceRecordId: record.sourceRecordId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    })));
   } catch (error) {
     console.error('Get pending pricing records error:', error);
     res.status(500).json({ error: 'Failed to fetch pending pricing records' });
   }
 });
 
-// Bulk add prices to site records
 router.post('/bulk-price', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
     const { updates } = req.body as { updates: { id: string; price: number }[] };
@@ -505,26 +502,16 @@ router.post('/bulk-price', authenticateToken, requireMainStockManager, async (re
 
     const results = [];
     for (const { id, price } of updates) {
-      const record = await MainStockRecord.findById(id);
+      const record = await prisma.mainStockRecord.findUnique({ where: { id }, include: { material: true } });
       if (record) {
-        const previousPrice: number | null = record.price ?? null;
-        const quantityReceived = record.quantityReceived || 0;
-        const totalValue = price * quantityReceived;
-
-        record.price = price;
-        record.totalValue = totalValue;
-        record.status = RecordStatus.PRICED;
-
-        await record.save();
-
-        // Log individual price update
-        await ActionLogService.logPriceUpdate(req, record._id.toString(), record.materialName, previousPrice, price);
-
+        const previousPrice = record.price ?? null;
+        const totalValue = price * record.quantityReceived;
+        await prisma.mainStockRecord.update({ where: { id }, data: { price, totalValue, status: 'PRICED' } });
+        await ActionLogService.logPriceUpdate(req, id, getMaterialName(record), previousPrice, price);
         results.push({ id, price, totalValue });
       }
     }
 
-    // Broadcast bulk update
     broadcastToClients({
       type: 'MAIN_STOCK_UPDATED',
       payload: { bulkPriceUpdate: results },
@@ -538,16 +525,15 @@ router.post('/bulk-price', authenticateToken, requireMainStockManager, async (re
   }
 });
 
-// Get stock movements for a specific record
 router.get('/:id/movements', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
-    const { id } = req.params;
-    const idStr = Array.isArray(id) ? id[0] : id;
+    const id = normalizeParam(req.params.id);
+    if (!id) {
+      res.status(400).json({ error: 'Invalid record ID' });
+      return;
+    }
 
-    const movements = await StockMovement.find({
-      mainStock_id: new mongoose.Types.ObjectId(idStr),
-    }).sort({ date: -1 });
-
+    const movements = await prisma.stockMovement.findMany({ where: { mainStockRecordId: id }, orderBy: { date: 'desc' } });
     res.json(movements);
   } catch (error) {
     console.error('Get stock movements error:', error);

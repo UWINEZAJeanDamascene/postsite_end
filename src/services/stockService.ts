@@ -1,11 +1,7 @@
-import { MainStockRecord, IMainStockRecordDocument } from '../models/MainStockRecord';
-import { StockMovement, MovementType } from '../models/StockMovement';
-import mongoose from 'mongoose';
+import type { MovementType } from '@prisma/client';
+import prisma from '../config/prisma';
+import { recordStockMovement } from './viewsAggregation';
 
-/**
- * Update MainStockRecord quantities with StockMovement logging
- * Every change writes a StockMovement document first, then updates the record
- */
 export async function updateStockQuantities(
   mainStockRecordId: string,
   updates: {
@@ -19,57 +15,53 @@ export async function updateStockQuantities(
     material_id?: string;
     notes?: string;
   }
-): Promise<IMainStockRecordDocument> {
-  const record = await MainStockRecord.findById(mainStockRecordId);
+): Promise<any> {
+  const record = await prisma.mainStockRecord.findUnique({ where: { id: mainStockRecordId } });
   if (!record) {
     throw new Error('MainStockRecord not found');
   }
 
   const previousQtyReceived = record.quantityReceived;
   const previousQtyUsed = record.quantityUsed;
-
   const newQtyReceived = updates.quantityReceived ?? previousQtyReceived;
   const newQtyUsed = updates.quantityUsed ?? previousQtyUsed;
 
-  // Determine movement type
-  let movementType = MovementType.ADJUSTMENT;
+  let movementType: MovementType = 'ADJUSTMENT';
   if (newQtyReceived > previousQtyReceived) {
-    movementType = MovementType.RECEIVED;
+    movementType = 'RECEIVED';
   } else if (newQtyUsed > previousQtyUsed) {
-    movementType = MovementType.USED;
+    movementType = 'USED';
   }
 
-  // 1. Write StockMovement first
-  await StockMovement.create({
-    mainStockRecord_id: new mongoose.Types.ObjectId(mainStockRecordId),
-    site_id: context.site_id ? new mongoose.Types.ObjectId(context.site_id) : undefined,
-    material_id: context.material_id ? new mongoose.Types.ObjectId(context.material_id) : record.material_id,
+  await recordStockMovement({
+    mainStockRecord_id: mainStockRecordId,
+    site_id: context.site_id,
+    material_id: context.material_id ?? record.materialId ?? undefined,
     movementType,
     quantity: Math.max(
       Math.abs(newQtyReceived - previousQtyReceived),
-      Math.abs(newQtyUsed - previousQtyUsed)
+      Math.abs(newQtyUsed - previousQtyUsed),
     ),
     previousQuantityUsed: previousQtyUsed,
     previousQuantityReceived: previousQtyReceived,
     newQuantityUsed: newQtyUsed,
     newQuantityReceived: newQtyReceived,
-    performedBy: new mongoose.Types.ObjectId(context.performedBy),
+    performedBy: context.performedBy,
     company_id: context.company_id,
     notes: context.notes || `Quantity update: ${movementType}`,
-    date: new Date(),
   });
 
-  // 2. Update MainStockRecord
-  record.quantityReceived = newQtyReceived;
-  record.quantityUsed = newQtyUsed;
-  await record.save();
-
-  return record;
+  const totalValue = record.price != null ? record.price * newQtyReceived : record.totalValue;
+  return prisma.mainStockRecord.update({
+    where: { id: mainStockRecordId },
+    data: {
+      quantityReceived: newQtyReceived,
+      quantityUsed: newQtyUsed,
+      totalValue,
+    },
+  });
 }
 
-/**
- * Set price on a MainStockRecord with movement logging
- */
 export async function setStockPrice(
   mainStockRecordId: string,
   price: number,
@@ -78,46 +70,42 @@ export async function setStockPrice(
     company_id: string;
     notes?: string;
   }
-): Promise<IMainStockRecordDocument> {
-  const record = await MainStockRecord.findById(mainStockRecordId);
+): Promise<any> {
+  const record = await prisma.mainStockRecord.findUnique({ where: { id: mainStockRecordId } });
   if (!record) {
     throw new Error('MainStockRecord not found');
   }
 
-  const previousPrice = record.price;
-
-  // Log as adjustment movement
-  await StockMovement.create({
-    mainStockRecord_id: new mongoose.Types.ObjectId(mainStockRecordId),
-    material_id: record.material_id,
-    movementType: MovementType.ADJUSTMENT,
+  await recordStockMovement({
+    mainStockRecord_id: mainStockRecordId,
+    material_id: record.materialId ?? undefined,
+    movementType: 'ADJUSTMENT',
     quantity: 0,
     previousQuantityUsed: record.quantityUsed,
     previousQuantityReceived: record.quantityReceived,
     newQuantityUsed: record.quantityUsed,
     newQuantityReceived: record.quantityReceived,
-    performedBy: new mongoose.Types.ObjectId(context.performedBy),
+    performedBy: context.performedBy,
     company_id: context.company_id,
-    notes: context.notes || `Price set: ${previousPrice} -> ${price}`,
-    date: new Date(),
+    notes: context.notes || `Price set: ${record.price} -> ${price}`,
   });
 
-  // Update price (totalValue computed via pre-save hook)
-  record.price = price;
-  await record.save();
-
-  return record;
+  const totalValue = record.quantityReceived != null && price != null ? price * record.quantityReceived : record.totalValue;
+  return prisma.mainStockRecord.update({
+    where: { id: mainStockRecordId },
+    data: {
+      price,
+      totalValue,
+    },
+  });
 }
 
-/**
- * Bulk set prices on site-sourced records
- */
 export async function bulkSetPrices(
   updates: { mainStockRecordId: string; price: number }[],
   context: {
     performedBy: string;
     company_id: string;
-  }
+  },
 ): Promise<{ updated: number; errors: string[] }> {
   const errors: string[] = [];
   let updated = 0;
@@ -137,3 +125,4 @@ export async function bulkSetPrices(
 
   return { updated, errors };
 }
+

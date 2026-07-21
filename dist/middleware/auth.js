@@ -1,31 +1,11 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
-    __setModuleDefault(result, mod);
-    return result;
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.requireSiteRecordOwnership = exports.requireSiteAccess = exports.requireMainStockManager = exports.requireRole = exports.requirePermission = exports.authenticateToken = void 0;
 const auth_1 = require("../utils/auth");
-const models_1 = require("../models");
+const prisma_1 = __importDefault(require("../config/prisma"));
 const types_1 = require("../types");
 async function authenticateToken(req, res, next) {
     try {
@@ -55,23 +35,27 @@ async function authenticateToken(req, res, next) {
         // Support both 'id' and 'userId' in token for backwards compatibility
         const userId = decoded.userId || decoded.id;
         // Verify user still exists and is active
-        const user = await models_1.User.findById(userId).select('-password');
+        const user = await prisma_1.default.user.findUnique({
+            where: { id: userId },
+            include: { assignedSites: true },
+        });
         if (!user || !user.isActive) {
             res.status(401).json({ error: 'User not found or inactive' });
             return;
         }
+        const normalizedRole = user.role.toLowerCase();
         // For site managers, get their assigned sites
-        let assignedSiteIds = [];
-        if (user.role === types_1.UserRole.SITE_MANAGER && user.assignedSites) {
-            assignedSiteIds = user.assignedSites.map((id) => id.toString());
-        }
+        const assignedSiteIds = normalizedRole === types_1.UserRole.SITE_MANAGER && user.assignedSites
+            ? user.assignedSites.map((assignment) => assignment.siteId)
+            : [];
         req.user = {
-            id: user._id.toString(),
+            id: user.id,
             email: user.email,
             name: user.name,
-            role: user.role, // Cast to UserType's UserRole
-            company_id: user.company_id,
+            role: normalizedRole,
+            company_id: user.companyId,
             isActive: user.isActive,
+            assignedSites: assignedSiteIds.map((id) => ({ id, name: '' })),
         };
         req.assignedSiteIds = assignedSiteIds;
         next();
@@ -160,21 +144,22 @@ async function requireSiteRecordOwnership(req, res, next) {
         next();
         return;
     }
-    const recordId = req.params.id;
+    const recordId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     if (!recordId) {
         res.status(400).json({ error: 'Record ID required' });
         return;
     }
-    // Import SiteRecord model dynamically to avoid circular dependency
-    const { SiteRecord } = await Promise.resolve().then(() => __importStar(require('../models/SiteRecord')));
-    const record = await SiteRecord.findById(recordId).select('recordedBy site_id');
+    const record = await prisma_1.default.siteRecord.findUnique({
+        where: { id: recordId },
+        select: { createdById: true, siteId: true },
+    });
     if (!record) {
         res.status(404).json({ error: 'Record not found' });
         return;
     }
     // Site manager can only modify their own records on their assigned sites
-    const recordedById = record.recordedBy?.toString();
-    const siteId = record.site_id?.toString();
+    const recordedById = record.createdById;
+    const siteId = record.siteId;
     if (recordedById !== req.user.id ||
         !req.assignedSiteIds.includes(siteId || '')) {
         res.status(403).json({ error: 'Can only modify your own records' });
