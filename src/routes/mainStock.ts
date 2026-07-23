@@ -12,7 +12,7 @@ function normalizeParam(param: string | string[] | undefined): string | undefine
 }
 
 function getMaterialName(record: any) {
-  return record.material?.name ?? record.materialId ?? 'Unknown material';
+  return record.material?.name ?? record.sourceRecord?.materialName ?? record.materialId ?? 'Unknown material';
 }
 
 function mapMainStockRecord(record: any) {
@@ -48,7 +48,19 @@ router.get('/', authenticateToken, requireMainStockManager, async (req, res): Pr
       where.siteId = siteId;
     }
     if (materialName && typeof materialName === 'string') {
-      where.materialName = { contains: materialName, mode: 'insensitive' };
+      const matchingMaterials = await prisma.material.findMany({
+        where: {
+          companyId,
+          name: { contains: materialName },
+        },
+        select: { id: true },
+      });
+      const materialIds = matchingMaterials.map((m: { id: string }) => m.id);
+      if (materialIds.length > 0) {
+        where.materialId = { in: materialIds };
+      } else {
+        where.materialId = '';
+      }
     }
     if (source && typeof source === 'string' && source !== 'all') {
       where.source = source;
@@ -72,6 +84,7 @@ router.get('/', authenticateToken, requireMainStockManager, async (req, res): Pr
         orderBy: { createdAt: 'desc' },
         skip,
         take: limitNum,
+        include: { material: true, sourceRecord: { select: { materialName: true } } },
       }),
       prisma.mainStockRecord.count({ where }),
     ]);
@@ -155,7 +168,7 @@ router.get('/movements', authenticateToken, requireMainStockManager, async (req,
 
     const records = await prisma.mainStockRecord.findMany({
       where: { companyId, date: { gte: startDate } },
-      select: { date: true, quantityReceived: true, quantityUsed: true, materialId: true, material: { select: { name: true } } },
+      select: { date: true, quantityReceived: true, quantityUsed: true, materialId: true, material: { select: { name: true } }, sourceRecord: { select: { materialName: true } } },
     });
 
     const grouped = new Map<string, { received: number; used: number; materials: { name: string; qty: number }[] }>;
@@ -164,7 +177,7 @@ router.get('/movements', authenticateToken, requireMainStockManager, async (req,
       const existing = grouped.get(dateStr) ?? { received: 0, used: 0, materials: [] };
       existing.received += record.quantityReceived;
       existing.used += record.quantityUsed;
-      existing.materials.push({ name: record.material?.name ?? record.materialId ?? 'Unknown material', qty: record.quantityReceived });
+      existing.materials.push({ name: record.material?.name ?? record.sourceRecord?.materialName ?? record.materialId ?? 'Unknown material', qty: record.quantityReceived });
       grouped.set(dateStr, existing);
     });
 
@@ -197,7 +210,10 @@ router.get('/:id', authenticateToken, requireMainStockManager, async (req, res):
       return;
     }
 
-    const record = await prisma.mainStockRecord.findUnique({ where: { id } });
+    const record = await prisma.mainStockRecord.findUnique({ 
+      where: { id },
+      include: { material: true, sourceRecord: { select: { materialName: true } } },
+    });
     if (!record) {
       res.status(404).json({ error: 'Record not found' });
       return;
@@ -213,6 +229,7 @@ router.get('/:id', authenticateToken, requireMainStockManager, async (req, res):
 router.post('/direct', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
     const { materialName, material_id, quantityReceived, quantityUsed, price, date, notes } = req.body;
+    const companyId = req.user!.company_id;
 
     if (!date) {
       res.status(400).json({ error: 'Date is required' });
@@ -224,13 +241,33 @@ router.post('/direct', authenticateToken, requireMainStockManager, async (req, r
       return;
     }
 
+    let materialId = material_id || null;
+
+    if (!materialId) {
+      const existingMaterial = await prisma.material.findFirst({
+        where: { companyId, name: materialName },
+      });
+      if (existingMaterial) {
+        materialId = existingMaterial.id;
+      } else {
+        const newMaterial = await prisma.material.create({
+          data: {
+            name: materialName,
+            unit: 'unit',
+            companyId,
+            isActive: true,
+          },
+        });
+        materialId = newMaterial.id;
+      }
+    }
+
     const totalValue = price != null && quantityReceived != null ? price * quantityReceived : null;
     const record = await prisma.mainStockRecord.create({
       data: {
         source: 'DIRECT',
         siteSource: 'Direct',
-        materialName,
-        materialId: material_id || null,
+        materialId,
         quantityReceived: quantityReceived || 0,
         quantityUsed: quantityUsed || 0,
         price: price ?? null,
@@ -239,7 +276,7 @@ router.post('/direct', authenticateToken, requireMainStockManager, async (req, r
         status: 'DIRECT',
         notes,
         createdById: req.user!.id,
-        companyId: req.user!.company_id,
+        companyId,
         isDirectEntry: true,
       },
       include: { material: true },
@@ -321,7 +358,8 @@ router.patch('/:id/price', authenticateToken, requireMainStockManager, async (re
 router.patch('/:id/receive', authenticateToken, requireMainStockManager, async (req, res): Promise<void> => {
   try {
     const id = normalizeParam(req.params.id);
-    const { price } = req.body;
+    const body = req.body || {};
+    const price = typeof body.price === 'number' ? body.price : undefined;
 
     if (!id) {
       res.status(400).json({ error: 'Invalid record ID' });

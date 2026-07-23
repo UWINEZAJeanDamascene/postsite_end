@@ -12,23 +12,25 @@ afterAll(async () => {
 afterEach(async () => {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
-      "ActionLog",
-      "Notification",
-      "Invoice",
-      "Quotation",
-      "PurchaseReturn",
-      "DeliveryNote",
-      "PurchaseOrder",
-      "Client",
-      "Supplier",
-      "SiteRecord",
-      "MainStockRecord",
-      "StockMovement",
-      "SiteAssignment",
-      "Site",
-      "Material",
-      "User",
-      "Company"
-    RESTART IDENTITY CASCADE;
+      movement_type,
+      action_log,
+      notification,
+      invoice,
+      quotation,
+      purchase_return,
+      delivery_note_item,
+      delivery_note,
+      purchase_order_item,
+      purchase_order,
+      client,
+      supplier,
+      site_record,
+      main_stock_record,
+      stock_movement,
+      site_assignment,
+      site,
+      material,
+      user,
+      company
   `);
 });

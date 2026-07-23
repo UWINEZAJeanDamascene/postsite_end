@@ -62,7 +62,7 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
       if (endDate && typeof endDate === 'string') where.date.lte = new Date(endDate);
     }
     if (materialName && typeof materialName === 'string') {
-      where.materialName = { contains: materialName, mode: 'insensitive' };
+      where.materialName = { contains: materialName,  };
     }
 
     const records = await prisma.siteRecord.findMany({
@@ -98,7 +98,7 @@ router.get('/my', authenticateToken, async (req, res): Promise<void> => {
       if (endDate && typeof endDate === 'string') where.date.lte = new Date(endDate);
     }
     if (materialName && typeof materialName === 'string') {
-      where.materialName = { contains: materialName, mode: 'insensitive' };
+      where.materialName = { contains: materialName,  };
     }
     if (quantityUsed === 'true') {
       where.quantityUsed = { gt: 0 };
@@ -217,7 +217,7 @@ router.get('/:id', authenticateToken, async (req, res): Promise<void> => {
 
 router.post('/', authenticateToken, requireSiteAccess('siteId'), async (req, res): Promise<void> => {
   try {
-    const { materialName, quantityReceived, quantityUsed, date, notes, siteId } = req.body;
+    const { materialName, materialId, quantityReceived, quantityUsed, date, notes, siteId } = req.body;
     const companyId = req.user!.company_id;
 
     if (!materialName || !siteId || !date) {
@@ -233,6 +233,7 @@ router.post('/', authenticateToken, requireSiteAccess('siteId'), async (req, res
       data: {
         siteId,
         materialName,
+        materialId: materialId || null,
         quantityReceived: quantityReceived || 0,
         quantityUsed: quantityUsed || 0,
         date: new Date(date),
@@ -278,7 +279,7 @@ router.post('/', authenticateToken, requireSiteAccess('siteId'), async (req, res
 
 router.post('/bulk', authenticateToken, async (req, res): Promise<void> => {
   try {
-    const records = req.body as Array<{ materialName: string; quantityReceived: number; quantityUsed?: number; date: string; notes?: string; siteId: string }>;
+    const records = req.body as Array<{ materialName: string; materialId?: string; quantityReceived: number; quantityUsed?: number; date: string; notes?: string; siteId: string }>;
     const companyId = req.user!.company_id;
 
     if (!Array.isArray(records) || records.length === 0) {
@@ -307,6 +308,7 @@ router.post('/bulk', authenticateToken, async (req, res): Promise<void> => {
         data: {
           siteId: recordData.siteId,
           materialName: recordData.materialName,
+          materialId: recordData.materialId || null,
           quantityReceived: recordData.quantityReceived || 0,
           quantityUsed: recordData.quantityUsed || 0,
           date: new Date(recordData.date),
@@ -362,7 +364,7 @@ router.post('/bulk', authenticateToken, async (req, res): Promise<void> => {
 router.put('/:id', authenticateToken, async (req, res): Promise<void> => {
   try {
     const id = normalizeParam(req.params.id);
-    const { materialName, quantityReceived, quantityUsed, date, notes } = req.body;
+    const { materialName, materialId, quantityReceived, quantityUsed, date, notes } = req.body;
     const companyId = req.user!.company_id;
 
     if (!id) {
@@ -386,6 +388,7 @@ router.put('/:id', authenticateToken, async (req, res): Promise<void> => {
 
     const updateData: any = {};
     if (materialName) updateData.materialName = materialName;
+    if (materialId !== undefined) updateData.materialId = materialId || null;
     if (quantityReceived !== undefined) updateData.quantityReceived = quantityReceived;
     if (quantityUsed !== undefined) updateData.quantityUsed = quantityUsed;
     if (date) updateData.date = new Date(date);

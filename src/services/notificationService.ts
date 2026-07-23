@@ -102,7 +102,7 @@ export class NotificationService {
       userId,
       type: NotificationType.PRICE_UPDATED,
       title: 'Price Updated',
-      message: `${materialName} price changed from $${oldPrice} to $${newPrice}`,
+      message: `${materialName} price changed from RWF ${oldPrice} to RWF ${newPrice}`,
       priority: NotificationPriority.MEDIUM,
       data: { materialName, oldPrice, newPrice },
     });

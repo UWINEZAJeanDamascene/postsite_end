@@ -26,7 +26,6 @@ router.get('/search', authenticateToken, async (req, res): Promise<void> => {
         companyId,
         name: {
           contains: q,
-          mode: 'insensitive',
         },
       },
       take: 20,
@@ -121,7 +120,6 @@ router.post('/', authenticateToken, requireMainStockManager, async (req, res): P
         companyId,
         name: {
           equals: name,
-          mode: 'insensitive',
         },
       },
     });

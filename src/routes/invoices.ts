@@ -65,7 +65,7 @@ function formatInvoice(invoice: any) {
 }
 
 function formatMoney(value: number | undefined): string {
-  return `$${Number(value || 0).toFixed(2)}`;
+  return `RWF ${Number(value || 0).toFixed(2)}`;
 }
 
 function buildInvoiceHtml(invoice: any, company: any): string {
@@ -178,7 +178,7 @@ router.get("/", authenticateToken, async (req, res): Promise<void> => {
     }
 
     if (status && status !== "all") where.status = status as string;
-    if (client) where.clientName = { contains: client as string, mode: 'insensitive' };
+    if (client) where.clientName = { contains: client as string,  };
     if (clientId) where.clientId = clientId as string;
     if (siteId) where.siteId = siteId as string;
     if (startDate || endDate) {

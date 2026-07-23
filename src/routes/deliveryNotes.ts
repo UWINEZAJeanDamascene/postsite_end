@@ -82,9 +82,9 @@ router.get('/', authenticateToken, async (req: Request, res: Response): Promise<
     if (poId) where.poId = poId
     if (search) {
       where.OR = [
-        { dnNumber: { contains: search as string, mode: 'insensitive' } },
-        { poNumber: { contains: search as string, mode: 'insensitive' } },
-        { supplierName: { contains: search as string, mode: 'insensitive' } },
+        { dnNumber: { contains: search as string,  } },
+        { poNumber: { contains: search as string,  } },
+        { supplierName: { contains: search as string,  } },
       ]
     }
 

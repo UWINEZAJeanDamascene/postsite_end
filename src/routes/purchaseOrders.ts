@@ -55,7 +55,7 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
     }
     if (status && status !== 'all') where.status = toPrismaStatus(status as string);
     if (siteId) where.siteId = siteId as string;
-    if (supplier) where.supplierName = { contains: supplier as string, mode: 'insensitive' };
+    if (supplier) where.supplierName = { contains: supplier as string,  };
     if (startDate || endDate) {
       where.createdAt = {} as any;
       if (startDate) where.createdAt.gte = new Date(startDate as string);
@@ -900,8 +900,8 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
           <td>${item.description || '-'}</td>
           <td class="text-right">${item.quantityOrdered}</td>
           <td class="text-right">${item.unit}</td>
-          <td class="text-right">$${Number(item.unitPrice || 0).toFixed(2)}</td>
-          <td class="text-right">$${Number(item.totalPrice || 0).toFixed(2)}</td>
+          <td class="text-right">RWF ${Number(item.unitPrice || 0).toFixed(2)}</td>
+          <td class="text-right">RWF ${Number(item.totalPrice || 0).toFixed(2)}</td>
         </tr>
         `).join('')}
       </tbody>
@@ -910,15 +910,15 @@ router.get('/:id/pdf', authenticateToken, async (req, res): Promise<void> => {
     <div class="totals">
       <div class="totals-row">
         <span>Subtotal:</span>
-        <span>$${Number(po.subTotal || 0).toFixed(2)}</span>
+        <span>RWF ${Number(po.subTotal || 0).toFixed(2)}</span>
       </div>
       <div class="totals-row">
         <span>Tax (${po.taxRate}%):</span>
-        <span>$${Number(po.taxAmount || 0).toFixed(2)}</span>
+        <span>RWF ${Number(po.taxAmount || 0).toFixed(2)}</span>
       </div>
       <div class="totals-row total-amount">
         <span>TOTAL:</span>
-        <span>$${Number(po.totalAmount || 0).toFixed(2)}</span>
+        <span>RWF ${Number(po.totalAmount || 0).toFixed(2)}</span>
       </div>
     </div>
   </div>

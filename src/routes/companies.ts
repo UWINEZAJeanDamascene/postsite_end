@@ -79,7 +79,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-router.patch('/:id', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.patch('/:id', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { name, address, phone, email, website, taxId, industry, description, logo, signatureImage, stampImage, footerImage } = req.body;
     const { id } = req.params;
@@ -123,7 +123,7 @@ router.patch('/:id', authenticateToken, requireRole([UserRole.MAIN_MANAGER, User
   }
 });
 
-router.post('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { image } = req.body;
     const { id } = req.params;
@@ -154,7 +154,7 @@ router.post('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER, 
   }
 });
 
-router.delete('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { id } = req.params;
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -164,7 +164,7 @@ router.delete('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER
       return;
     }
 
-    const updated = await prisma.company.update({ where: { id: company.id }, data: { logo: null } });
+    const updated = await prisma.company.update({ where: { id: company.id }, data: { logo: null as any } });
     await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.COMPANY, `Company logo deleted: ${updated.name}`, { resourceId: updated.id, resourceName: updated.name });
     res.json({ logo: null });
   } catch (error) {
@@ -173,7 +173,7 @@ router.delete('/:id/logo', authenticateToken, requireRole([UserRole.MAIN_MANAGER
   }
 });
 
-router.post('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { image } = req.body;
     const { id } = req.params;
@@ -204,7 +204,7 @@ router.post('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MANA
   }
 });
 
-router.delete('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { id } = req.params;
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -214,7 +214,7 @@ router.delete('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MA
       return;
     }
 
-    const updated = await prisma.company.update({ where: { id: company.id }, data: { signatureImage: null } });
+    const updated = await prisma.company.update({ where: { id: company.id }, data: { signatureImage: null as any } });
     await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.COMPANY, `Company signature deleted: ${updated.name}`, { resourceId: updated.id, resourceName: updated.name });
     res.json({ signatureImage: null });
   } catch (error) {
@@ -223,7 +223,7 @@ router.delete('/:id/signature', authenticateToken, requireRole([UserRole.MAIN_MA
   }
 });
 
-router.post('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { image } = req.body;
     const { id } = req.params;
@@ -254,7 +254,7 @@ router.post('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGER,
   }
 });
 
-router.delete('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { id } = req.params;
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -264,7 +264,7 @@ router.delete('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGE
       return;
     }
 
-    const updated = await prisma.company.update({ where: { id: company.id }, data: { stampImage: null } });
+    const updated = await prisma.company.update({ where: { id: company.id }, data: { stampImage: null as any } });
     await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.COMPANY, `Company stamp deleted: ${updated.name}`, { resourceId: updated.id, resourceName: updated.name });
     res.json({ stampImage: null });
   } catch (error) {
@@ -273,7 +273,7 @@ router.delete('/:id/stamp', authenticateToken, requireRole([UserRole.MAIN_MANAGE
   }
 });
 
-router.post('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { image } = req.body;
     const { id } = req.params;
@@ -304,7 +304,7 @@ router.post('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAGER
   }
 });
 
-router.delete('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAGER, UserRole.MANAGER, UserRole.ACCOUNTANT]), async (req, res) => {
   try {
     const { id } = req.params;
     const idStr = Array.isArray(id) ? id[0] : id;
@@ -314,7 +314,7 @@ router.delete('/:id/footer', authenticateToken, requireRole([UserRole.MAIN_MANAG
       return;
     }
 
-    const updated = await prisma.company.update({ where: { id: company.id }, data: { footerImage: null } });
+    const updated = await prisma.company.update({ where: { id: company.id }, data: { footerImage: null as any } });
     await ActionLogService.logFromRequest(req, ActionType.UPDATE, ResourceType.COMPANY, `Company footer image deleted: ${updated.name}`, { resourceId: updated.id, resourceName: updated.name });
     res.json({ footerImage: null });
   } catch (error) {

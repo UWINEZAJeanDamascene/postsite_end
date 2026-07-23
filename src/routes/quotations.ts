@@ -41,10 +41,10 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
     }
 
     if (status && status !== 'all') where.status = status as string;
-    if (client) where.clientName = { contains: client as string, mode: 'insensitive' };
+    if (client) where.clientName = { contains: client as string,  };
     if (clientId) where.clientId = clientId as string;
     if (siteId) where.siteId = siteId as string;
-    if (supplier) where.supplierName = { contains: supplier as string, mode: 'insensitive' };
+    if (supplier) where.supplierName = { contains: supplier as string,  };
     if (startDate || endDate) {
       where.createdAt = {} as any;
       if (startDate) where.createdAt.gte = new Date(startDate as string);
@@ -588,7 +588,7 @@ function escapePdfText(value: unknown): string {
 }
 
 function formatMoney(value: number | undefined): string {
-  return `$${Number(value || 0).toFixed(2)}`;
+  return `RWF ${Number(value || 0).toFixed(2)}`;
 }
 
 function wrapText(text: string, maxLength: number): string[] {

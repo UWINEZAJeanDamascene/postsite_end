@@ -61,10 +61,10 @@ router.get('/', authenticateToken, async (req, res): Promise<void> => {
 
     if (search) {
       where.OR = [
-        { description: { contains: String(search), mode: 'insensitive' } },
-        { userName: { contains: String(search), mode: 'insensitive' } },
-        { userEmail: { contains: String(search), mode: 'insensitive' } },
-        { resourceName: { contains: String(search), mode: 'insensitive' } },
+        { description: { contains: String(search),  } },
+        { userName: { contains: String(search),  } },
+        { userEmail: { contains: String(search),  } },
+        { resourceName: { contains: String(search),  } },
       ];
     }
 

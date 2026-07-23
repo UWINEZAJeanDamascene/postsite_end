@@ -10,6 +10,24 @@ export async function syncSiteRecordToMainStock(siteRecordId: string) {
     throw new Error('Site record not found');
   }
 
+  let materialId = siteRecord.materialId;
+
+  if (!materialId && siteRecord.materialName) {
+    const material = await prisma.material.findFirst({
+      where: {
+        companyId: siteRecord.companyId,
+        name: siteRecord.materialName,
+      },
+    });
+    if (material) {
+      materialId = material.id;
+      await prisma.siteRecord.update({
+        where: { id: siteRecord.id },
+        data: { materialId: material.id },
+      });
+    }
+  }
+
   const existingMainRecord = await prisma.mainStockRecord.findUnique({ where: { sourceRecordId: siteRecordId } });
   const status = existingMainRecord?.price != null ? 'PRICED' : 'PENDING_PRICE';
   const mainStockData: any = {
@@ -17,7 +35,7 @@ export async function syncSiteRecordToMainStock(siteRecordId: string) {
     siteSource: siteRecord.site?.name ?? 'Unknown',
     siteId: siteRecord.siteId,
     sourceRecordId: siteRecord.id,
-    materialName: siteRecord.materialName,
+    materialId,
     quantityReceived: siteRecord.quantityReceived,
     quantityUsed: siteRecord.quantityUsed,
     date: siteRecord.date,

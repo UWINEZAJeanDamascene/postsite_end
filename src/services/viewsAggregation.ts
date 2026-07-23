@@ -5,13 +5,13 @@ import prisma from '../config/prisma';
 function buildFilters(material?: string, startDate?: string, endDate?: string) {
   const clauses: Prisma.Sql[] = [];
   if (material) {
-    clauses.push(Prisma.sql`AND "materialName" ILIKE ${`%${material}%`}`);
+    clauses.push(Prisma.sql`AND COALESCE(Material.name, sourceRecord.materialName) LIKE ${`%${material}%`}`);
   }
   if (startDate) {
-    clauses.push(Prisma.sql`AND "date" >= ${new Date(startDate)}`);
+    clauses.push(Prisma.sql`AND date >= ${new Date(startDate)}`);
   }
   if (endDate) {
-    clauses.push(Prisma.sql`AND "date" <= ${new Date(endDate)}`);
+    clauses.push(Prisma.sql`AND date <= ${new Date(endDate)}`);
   }
   return clauses.length ? Prisma.join(clauses, ' ') : Prisma.empty;
 }
@@ -45,18 +45,20 @@ export async function getUsedMaterialsView(company_id: string, material?: string
   const filters = buildFilters(material, startDate, endDate);
   const rows = await prisma.$queryRaw<any[]>`
     SELECT
-      "materialName",
-      MIN("materialId") AS material_id,
-      SUM("quantityUsed") AS "totalQuantityUsed",
-      AVG("price") AS "avgPrice",
-      SUM("quantityUsed" * COALESCE("price", 0)) AS "totalValue",
-      COUNT(*) AS "recordCount",
-      JSON_AGG(JSON_BUILD_OBJECT('site_id', "siteId", 'source', LOWER("source"::text), 'quantityUsed', "quantityUsed")) AS "siteBreakdown"
-    FROM "MainStockRecord"
-    WHERE "companyId" = ${company_id} AND "quantityUsed" > 0
-    ${filters}
-    GROUP BY "materialName"
-    ORDER BY "totalQuantityUsed" DESC
+      COALESCE(Material.name, sourceRecord.materialName) AS materialName,
+      MIN(MainStockRecord.materialId) AS material_id,
+      SUM(MainStockRecord.quantityUsed) AS totalQuantityUsed,
+      AVG(MainStockRecord.price) AS avgPrice,
+      SUM(MainStockRecord.quantityUsed * COALESCE(MainStockRecord.price, 0)) AS totalValue,
+      COUNT(*) AS recordCount,
+      JSON_ARRAYAGG(JSON_OBJECT('site_id', MainStockRecord.siteId, 'source', LOWER(MainStockRecord.source), 'quantityUsed', MainStockRecord.quantityUsed)) AS siteBreakdown
+    FROM MainStockRecord
+    LEFT JOIN Material ON MainStockRecord.materialId = Material.id
+    LEFT JOIN SiteRecord AS sourceRecord ON MainStockRecord.sourceRecordId = sourceRecord.id
+    WHERE MainStockRecord.companyId = ${company_id} AND MainStockRecord.quantityUsed > 0
+      ${filters}
+    GROUP BY Material.name, sourceRecord.materialName
+    ORDER BY totalQuantityUsed DESC
   `;
   return rows.map(normalizeViewRow);
 }
@@ -65,25 +67,27 @@ export async function getRemainingMaterialsView(company_id: string, material?: s
   const filters = buildFilters(material, startDate, endDate);
   const rows = await prisma.$queryRaw<any[]>`
     SELECT
-      "materialName",
-      MIN("materialId") AS material_id,
-      SUM("quantityReceived") AS "totalReceived",
-      SUM("quantityUsed") AS "totalUsed",
-      SUM("quantityReceived" - "quantityUsed") AS "remainingQuantity",
-      AVG("price") AS "avgPrice",
-      SUM(("quantityReceived" - "quantityUsed") * COALESCE("price", 0)) AS "remainingValue",
-      JSON_AGG(JSON_BUILD_OBJECT(
-        'site_id', "siteId",
-        'source', LOWER("source"::text),
-        'quantityReceived', "quantityReceived",
-        'quantityUsed', "quantityUsed",
-        'remaining', "quantityReceived" - "quantityUsed"
-      )) AS "siteBreakdown"
-    FROM "MainStockRecord"
-    WHERE "companyId" = ${company_id}
-    ${filters}
-    GROUP BY "materialName"
-    ORDER BY "remainingQuantity" DESC
+      COALESCE(Material.name, sourceRecord.materialName) AS materialName,
+      MIN(MainStockRecord.materialId) AS material_id,
+      SUM(MainStockRecord.quantityReceived) AS totalReceived,
+      SUM(MainStockRecord.quantityUsed) AS totalUsed,
+      SUM(MainStockRecord.quantityReceived - MainStockRecord.quantityUsed) AS remainingQuantity,
+      AVG(MainStockRecord.price) AS avgPrice,
+      SUM((MainStockRecord.quantityReceived - MainStockRecord.quantityUsed) * COALESCE(MainStockRecord.price, 0)) AS remainingValue,
+      JSON_ARRAYAGG(JSON_OBJECT(
+        'site_id', MainStockRecord.siteId,
+        'source', LOWER(MainStockRecord.source),
+        'quantityReceived', MainStockRecord.quantityReceived,
+        'quantityUsed', MainStockRecord.quantityUsed,
+        'remaining', MainStockRecord.quantityReceived - MainStockRecord.quantityUsed
+      )) AS siteBreakdown
+    FROM MainStockRecord
+    LEFT JOIN Material ON MainStockRecord.materialId = Material.id
+    LEFT JOIN SiteRecord AS sourceRecord ON MainStockRecord.sourceRecordId = sourceRecord.id
+    WHERE MainStockRecord.companyId = ${company_id}
+      ${filters}
+    GROUP BY Material.name, sourceRecord.materialName
+    ORDER BY remainingQuantity DESC
   `;
   return rows.map(normalizeViewRow);
 }
@@ -91,16 +95,18 @@ export async function getRemainingMaterialsView(company_id: string, material?: s
 export async function getSingleUsedMaterialView(company_id: string, materialName: string) {
   const results = await prisma.$queryRaw<any[]>`
     SELECT
-      "materialName",
-      MIN("materialId") AS material_id,
-      SUM("quantityUsed") AS "totalQuantityUsed",
-      AVG("price") AS "avgPrice",
-      SUM("quantityUsed" * COALESCE("price", 0)) AS "totalValue",
-      COUNT(*) AS "recordCount",
-      JSON_AGG(JSON_BUILD_OBJECT('site_id', "siteId", 'source', LOWER("source"::text), 'quantityUsed', "quantityUsed")) AS "siteBreakdown"
-    FROM "MainStockRecord"
-    WHERE "companyId" = ${company_id} AND "quantityUsed" > 0 AND "materialName" ILIKE ${materialName}
-    GROUP BY "materialName"
+      COALESCE(Material.name, sourceRecord.materialName) AS materialName,
+      MIN(MainStockRecord.materialId) AS material_id,
+      SUM(MainStockRecord.quantityUsed) AS totalQuantityUsed,
+      AVG(MainStockRecord.price) AS avgPrice,
+      SUM(MainStockRecord.quantityUsed * COALESCE(MainStockRecord.price, 0)) AS totalValue,
+      COUNT(*) AS recordCount,
+      JSON_ARRAYAGG(JSON_OBJECT('site_id', MainStockRecord.siteId, 'source', LOWER(MainStockRecord.source), 'quantityUsed', MainStockRecord.quantityUsed)) AS siteBreakdown
+    FROM MainStockRecord
+    LEFT JOIN Material ON MainStockRecord.materialId = Material.id
+    LEFT JOIN SiteRecord AS sourceRecord ON MainStockRecord.sourceRecordId = sourceRecord.id
+    WHERE MainStockRecord.companyId = ${company_id} AND MainStockRecord.quantityUsed > 0 AND LOWER(Material.name) = LOWER(${materialName})
+    GROUP BY Material.name, sourceRecord.materialName
   `;
   return results[0] ? normalizeViewRow(results[0]) : null;
 }
@@ -108,23 +114,25 @@ export async function getSingleUsedMaterialView(company_id: string, materialName
 export async function getSingleRemainingMaterialView(company_id: string, materialName: string) {
   const results = await prisma.$queryRaw<any[]>`
     SELECT
-      "materialName",
-      MIN("materialId") AS material_id,
-      SUM("quantityReceived") AS "totalReceived",
-      SUM("quantityUsed") AS "totalUsed",
-      SUM("quantityReceived" - "quantityUsed") AS "remainingQuantity",
-      AVG("price") AS "avgPrice",
-      SUM(("quantityReceived" - "quantityUsed") * COALESCE("price", 0)) AS "remainingValue",
-      JSON_AGG(JSON_BUILD_OBJECT(
-        'site_id', "siteId",
-        'source', LOWER("source"::text),
-        'quantityReceived', "quantityReceived",
-        'quantityUsed', "quantityUsed",
-        'remaining', "quantityReceived" - "quantityUsed"
-      )) AS "siteBreakdown"
-    FROM "MainStockRecord"
-    WHERE "companyId" = ${company_id} AND "materialName" ILIKE ${materialName}
-    GROUP BY "materialName"
+      COALESCE(Material.name, sourceRecord.materialName) AS materialName,
+      MIN(MainStockRecord.materialId) AS material_id,
+      SUM(MainStockRecord.quantityReceived) AS totalReceived,
+      SUM(MainStockRecord.quantityUsed) AS totalUsed,
+      SUM(MainStockRecord.quantityReceived - MainStockRecord.quantityUsed) AS remainingQuantity,
+      AVG(MainStockRecord.price) AS avgPrice,
+      SUM((MainStockRecord.quantityReceived - MainStockRecord.quantityUsed) * COALESCE(MainStockRecord.price, 0)) AS remainingValue,
+      JSON_ARRAYAGG(JSON_OBJECT(
+        'site_id', MainStockRecord.siteId,
+        'source', LOWER(MainStockRecord.source),
+        'quantityReceived', MainStockRecord.quantityReceived,
+        'quantityUsed', MainStockRecord.quantityUsed,
+        'remaining', MainStockRecord.quantityReceived - MainStockRecord.quantityUsed
+      )) AS siteBreakdown
+    FROM MainStockRecord
+    LEFT JOIN Material ON MainStockRecord.materialId = Material.id
+    LEFT JOIN SiteRecord AS sourceRecord ON MainStockRecord.sourceRecordId = sourceRecord.id
+    WHERE MainStockRecord.companyId = ${company_id} AND LOWER(Material.name) = LOWER(${materialName})
+    GROUP BY Material.name, sourceRecord.materialName
   `;
   return results[0] ? normalizeViewRow(results[0]) : null;
 }

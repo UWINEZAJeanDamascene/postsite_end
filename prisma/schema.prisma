@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("POSTGRES_URL")
+  provider = "mysql"
+  url = env("DATABASE_URL")
 }
 
 enum UserRole {
@@ -131,7 +131,7 @@ model User {
   assignedSites  SiteAssignment[]
   companyId      String
   isActive       Boolean          @default(true)
-  profilePicture String?
+  profilePicture Json?
   phone          String?
   department     String?
   jobTitle       String?
@@ -314,10 +314,10 @@ model Company {
   id             String   @id @default(uuid())
   name           String
   companyId      String?  @unique
-  logo           String?
-  signatureImage String?
-  stampImage     String?
-  footerImage    String?
+  logo           Json?
+  signatureImage Json?
+  stampImage     Json?
+  footerImage    Json?
   address        String?
   phone          String?
   email          String?
@@ -376,7 +376,7 @@ model DeliveryNote {
   trackingNumber String?
   condition      DeliveryCondition
   notes          String?
-  attachments    String[]          @default([])
+  attachments    Json              @default("[]")
   subTotal       Float             @default(0)
   taxRate        Float             @default(0)
   taxAmount      Float             @default(0)
@@ -412,7 +412,7 @@ model PurchaseReturn {
   refundStatus   PurchaseReturnRefundStatus @default(pending)
   refundAmount   Float?
   notes          String?
-  attachments    String[]                   @default([])
+  attachments    Json                       @default("[]")
   createdById    String
   createdBy      User                       @relation("UserPurchaseReturns", fields: [createdById], references: [id])
   companyId      String
