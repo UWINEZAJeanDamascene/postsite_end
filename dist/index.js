@@ -224,7 +224,8 @@ async function startServer() {
         process.exit(1);
     }
 }
-if (require.main === module) {
+// Only start the server if not in test mode
+if (config_1.config.NODE_ENV !== 'test') {
     startServer();
 }
 exports.default = app;

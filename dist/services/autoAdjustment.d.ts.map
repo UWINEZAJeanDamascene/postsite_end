@@ -1,1 +1,1 @@
-{"version":3,"file":"autoAdjustment.d.ts","sourceRoot":"","sources":["../../src/services/autoAdjustment.ts"],"names":[],"mappings":"AAEA,wBAAsB,oBAAoB,CAAC,QAAQ,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAE1E;AAED,wBAAsB,yBAAyB,CAAC,YAAY,EAAE,MAAM;;;;;;;;;;;;;;;;;;;;GAkCnE"}
+{"version":3,"file":"autoAdjustment.d.ts","sourceRoot":"","sources":["../../src/services/autoAdjustment.ts"],"names":[],"mappings":"AAEA,wBAAsB,oBAAoB,CAAC,QAAQ,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAE1E;AAED,wBAAsB,yBAAyB,CAAC,YAAY,EAAE,MAAM;;;;;;;;;;;;;;;;;;;GAoDnE"}

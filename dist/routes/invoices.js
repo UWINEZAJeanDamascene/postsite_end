@@ -66,7 +66,7 @@ function formatInvoice(invoice) {
     };
 }
 function formatMoney(value) {
-    return `$${Number(value || 0).toFixed(2)}`;
+    return `RWF ${Number(value || 0).toFixed(2)}`;
 }
 function buildInvoiceHtml(invoice, company) {
     const client = invoice.client || {};
@@ -176,7 +176,7 @@ router.get("/", auth_1.authenticateToken, async (req, res) => {
         if (status && status !== "all")
             where.status = status;
         if (client)
-            where.clientName = { contains: client, mode: 'insensitive' };
+            where.clientName = { contains: client, };
         if (clientId)
             where.clientId = clientId;
         if (siteId)

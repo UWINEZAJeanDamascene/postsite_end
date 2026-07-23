@@ -77,7 +77,7 @@ router.get('/:id', auth_1.authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to get company' });
     }
 });
-router.patch('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.patch('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { name, address, phone, email, website, taxId, industry, description, logo, signatureImage, stampImage, footerImage } = req.body;
         const { id } = req.params;
@@ -128,7 +128,7 @@ router.patch('/:id', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.
         res.status(500).json({ error: 'Failed to update company' });
     }
 });
-router.post('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { image } = req.body;
         const { id } = req.params;
@@ -156,7 +156,7 @@ router.post('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([type
         res.status(500).json({ error: 'Failed to upload logo' });
     }
 });
-router.delete('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { id } = req.params;
         const idStr = Array.isArray(id) ? id[0] : id;
@@ -174,7 +174,7 @@ router.delete('/:id/logo', auth_1.authenticateToken, (0, auth_1.requireRole)([ty
         res.status(500).json({ error: 'Failed to delete logo' });
     }
 });
-router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { image } = req.body;
         const { id } = req.params;
@@ -202,7 +202,7 @@ router.post('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)(
         res.status(500).json({ error: 'Failed to upload signature image' });
     }
 });
-router.delete('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { id } = req.params;
         const idStr = Array.isArray(id) ? id[0] : id;
@@ -220,7 +220,7 @@ router.delete('/:id/signature', auth_1.authenticateToken, (0, auth_1.requireRole
         res.status(500).json({ error: 'Failed to delete signature image' });
     }
 });
-router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { image } = req.body;
         const { id } = req.params;
@@ -248,7 +248,7 @@ router.post('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([typ
         res.status(500).json({ error: 'Failed to upload stamp image' });
     }
 });
-router.delete('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { id } = req.params;
         const idStr = Array.isArray(id) ? id[0] : id;
@@ -266,7 +266,7 @@ router.delete('/:id/stamp', auth_1.authenticateToken, (0, auth_1.requireRole)([t
         res.status(500).json({ error: 'Failed to delete stamp image' });
     }
 });
-router.post('/:id/footer', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.post('/:id/footer', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { image } = req.body;
         const { id } = req.params;
@@ -294,7 +294,7 @@ router.post('/:id/footer', auth_1.authenticateToken, (0, auth_1.requireRole)([ty
         res.status(500).json({ error: 'Failed to upload footer image' });
     }
 });
-router.delete('/:id/footer', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER]), async (req, res) => {
+router.delete('/:id/footer', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.ACCOUNTANT]), async (req, res) => {
     try {
         const { id } = req.params;
         const idStr = Array.isArray(id) ? id[0] : id;

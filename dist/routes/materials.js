@@ -7,7 +7,6 @@ const express_1 = require("express");
 const auth_1 = require("../middleware/auth");
 const prisma_1 = __importDefault(require("../config/prisma"));
 const actionLogService_1 = require("../services/actionLogService");
-const actionLogService_2 = require("../services/actionLogService");
 const router = (0, express_1.Router)();
 function normalizeParam(param) {
     if (!param)
@@ -28,7 +27,6 @@ router.get('/search', auth_1.authenticateToken, async (req, res) => {
                 companyId,
                 name: {
                     contains: q,
-                    mode: 'insensitive',
                 },
             },
             take: 20,
@@ -115,7 +113,6 @@ router.post('/', auth_1.authenticateToken, auth_1.requireMainStockManager, async
                 companyId,
                 name: {
                     equals: name,
-                    mode: 'insensitive',
                 },
             },
         });
@@ -261,7 +258,7 @@ router.delete('/:id', auth_1.authenticateToken, auth_1.requireMainStockManager, 
             return;
         }
         await prisma_1.default.material.delete({ where: { id } });
-        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.DELETE, actionLogService_2.ResourceType.MATERIAL, `Deleted material: ${material.name}`, {
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_1.ActionType.DELETE, actionLogService_1.ResourceType.MATERIAL, `Deleted material: ${material.name}`, {
             resourceId: material.id,
             resourceName: material.name,
         });

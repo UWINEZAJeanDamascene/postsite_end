@@ -8,8 +8,8 @@ const auth_1 = require("../utils/auth");
 const auth_2 = require("../middleware/auth");
 const prisma_1 = __importDefault(require("../config/prisma"));
 const types_1 = require("../types");
-const client_1 = require("@prisma/client");
 const actionLogService_1 = require("../services/actionLogService");
+const client_1 = require("@prisma/client");
 function toPrismaUserRole(role) {
     return role.toUpperCase();
 }

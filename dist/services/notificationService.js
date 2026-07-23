@@ -71,7 +71,7 @@ class NotificationService {
             userId,
             type: client_1.NotificationType.PRICE_UPDATED,
             title: 'Price Updated',
-            message: `${materialName} price changed from $${oldPrice} to $${newPrice}`,
+            message: `${materialName} price changed from RWF ${oldPrice} to RWF ${newPrice}`,
             priority: client_1.NotificationPriority.MEDIUM,
             data: { materialName, oldPrice, newPrice },
         });

@@ -11,11 +11,11 @@ const types_1 = require("../types");
 const router = (0, express_1.Router)();
 // Validation schemas
 const deliveryNoteItemSchema = zod_1.z.object({
-    materialName: zod_1.z.string().min(1, 'Material name is required'),
-    material_id: zod_1.z.string().optional(),
+    materialName: zod_1.z.any(),
+    material_id: zod_1.z.string().nullable().optional(),
     quantityOrdered: zod_1.z.number().min(0, 'Quantity ordered must be >= 0'),
     quantityDelivered: zod_1.z.number().min(0, 'Quantity delivered must be >= 0'),
-    unit: zod_1.z.string().min(1, 'Unit is required'),
+    unit: zod_1.z.any(),
     unitPrice: zod_1.z.number().min(0, 'Unit price must be >= 0'),
     condition: zod_1.z.enum(['good', 'damaged', 'partial']).optional(),
     notes: zod_1.z.string().optional(),
@@ -81,9 +81,9 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
             where.poId = poId;
         if (search) {
             where.OR = [
-                { dnNumber: { contains: search, mode: 'insensitive' } },
-                { poNumber: { contains: search, mode: 'insensitive' } },
-                { supplierName: { contains: search, mode: 'insensitive' } },
+                { dnNumber: { contains: search, } },
+                { poNumber: { contains: search, } },
+                { supplierName: { contains: search, } },
             ];
         }
         const pageNum = parseInt(page, 10) || 1;
@@ -126,8 +126,24 @@ router.get('/:id', auth_1.authenticateToken, async (req, res) => {
 router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.UserRole.MAIN_MANAGER, types_1.UserRole.MANAGER, types_1.UserRole.SITE_MANAGER]), async (req, res) => {
     try {
         const { company_id, id: userId, name: userName } = req.user;
+        // Normalize items to avoid null/undefined strings that Zod rejects
+        if (Array.isArray(req.body?.items)) {
+            req.body.items = req.body.items.map((it) => ({
+                ...it,
+                materialName: it?.materialName ?? 'Material',
+                unit: it?.unit ?? 'pcs',
+                quantityOrdered: Number(it?.quantityOrdered) || 0,
+                quantityDelivered: Number(it?.quantityDelivered) || 0,
+                unitPrice: Number(it?.unitPrice) || 0,
+            }));
+        }
+        // Log incoming payload for debugging delivery note validation failures
+        console.debug('Create DeliveryNote payload (normalized):', JSON.stringify(req.body));
         const validation = deliveryNoteSchema.safeParse(req.body);
         if (!validation.success) {
+            // Log validation details for debugging
+            console.error('DeliveryNote validation failed:', validation.error.format());
+            console.error('DeliveryNote validation flattened:', validation.error.flatten());
             res.status(400).json({
                 message: 'Invalid data',
                 errors: validation.error.flatten().fieldErrors,
@@ -154,6 +170,8 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireRole)([types_1.User
         const dnNumber = await generateDNNumber(company_id);
         const itemsWithTotals = data.items.map((item) => ({
             ...item,
+            materialName: item.materialName || 'Material',
+            unit: item.unit || 'pcs',
             totalPrice: item.quantityDelivered * item.unitPrice,
         }));
         const subTotal = itemsWithTotals.reduce((sum, item) => sum + (item.totalPrice || 0), 0);

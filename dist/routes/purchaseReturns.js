@@ -84,9 +84,9 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
             where.poId = poId;
         if (search) {
             where.OR = [
-                { returnNumber: { contains: search, mode: 'insensitive' } },
-                { poNumber: { contains: search, mode: 'insensitive' } },
-                { supplierName: { contains: search, mode: 'insensitive' } },
+                { returnNumber: { contains: search, } },
+                { poNumber: { contains: search, } },
+                { supplierName: { contains: search, } },
             ];
         }
         const pageNum = parseInt(page, 10) || 1;

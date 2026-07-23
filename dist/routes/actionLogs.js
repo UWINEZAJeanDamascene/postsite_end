@@ -48,10 +48,10 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
         }
         if (search) {
             where.OR = [
-                { description: { contains: String(search), mode: 'insensitive' } },
-                { userName: { contains: String(search), mode: 'insensitive' } },
-                { userEmail: { contains: String(search), mode: 'insensitive' } },
-                { resourceName: { contains: String(search), mode: 'insensitive' } },
+                { description: { contains: String(search), } },
+                { userName: { contains: String(search), } },
+                { userEmail: { contains: String(search), } },
+                { resourceName: { contains: String(search), } },
             ];
         }
         const [logs, total] = await Promise.all([

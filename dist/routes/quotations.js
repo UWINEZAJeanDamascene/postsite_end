@@ -8,7 +8,259 @@ const prisma_1 = __importDefault(require("../config/prisma"));
 const auth_1 = require("../middleware/auth");
 const actionLogService_1 = require("../services/actionLogService");
 const actionLogService_2 = require("../services/actionLogService");
+const types_1 = require("../types");
 const router = (0, express_1.Router)();
+async function loadCompany(companyId) {
+    return prisma_1.default.company.findFirst({
+        where: {
+            OR: [{ companyId }, { id: companyId }],
+        },
+    });
+}
+router.get('/', auth_1.authenticateToken, async (req, res) => {
+    try {
+        const company_id = req.user.company_id;
+        const { status, client, clientId, siteId, supplier, startDate, endDate, page = '1', limit = '20', } = req.query;
+        const where = { companyId: company_id };
+        if (req.user.role === types_1.UserRole.SITE_MANAGER) {
+            if (!req.assignedSiteIds?.length) {
+                res.json({ records: [], total: 0, page: 1, totalPages: 0 });
+                return;
+            }
+            where.siteId = { in: req.assignedSiteIds };
+        }
+        if (status && status !== 'all')
+            where.status = status;
+        if (client)
+            where.clientName = { contains: client, };
+        if (clientId)
+            where.clientId = clientId;
+        if (siteId)
+            where.siteId = siteId;
+        if (supplier)
+            where.supplierName = { contains: supplier, };
+        if (startDate || endDate) {
+            where.createdAt = {};
+            if (startDate)
+                where.createdAt.gte = new Date(startDate);
+            if (endDate)
+                where.createdAt.lte = new Date(endDate);
+        }
+        const pageNum = parseInt(page, 10) || 1;
+        const limitNum = parseInt(limit, 10) || 20;
+        const [records, total] = await Promise.all([
+            prisma_1.default.quotation.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip: (pageNum - 1) * limitNum,
+                take: limitNum,
+                include: {
+                    site: { select: { id: true, name: true, location: true } },
+                    createdBy: { select: { name: true } },
+                },
+            }),
+            prisma_1.default.quotation.count({ where }),
+        ]);
+        res.json({
+            records: records.map(formatQt),
+            total,
+            page: pageNum,
+            totalPages: Math.ceil(total / limitNum),
+        });
+    }
+    catch (err) {
+        console.error('Get quotations error:', err);
+        res.status(500).json({ error: 'Failed to fetch quotations' });
+    }
+});
+router.post('/', auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
+    try {
+        const company_id = req.user.company_id;
+        const { client_id, site_id, supplier, items, taxRate = 0, validUntil, notes, terms } = req.body;
+        if (!client_id || !items?.length) {
+            res.status(400).json({ error: 'Client and items are required' });
+            return;
+        }
+        const client = await prisma_1.default.client.findFirst({
+            where: { id: client_id, companyId: company_id },
+        });
+        if (!client) {
+            res.status(404).json({ error: 'Client not found' });
+            return;
+        }
+        if (site_id) {
+            const site = await prisma_1.default.site.findFirst({
+                where: { id: site_id, companyId: company_id },
+            });
+            if (!site) {
+                res.status(404).json({ error: 'Site not found' });
+                return;
+            }
+        }
+        const processedItems = items.map((item) => ({
+            materialName: item.materialName,
+            material_id: item.material_id || null,
+            description: item.description || '',
+            quantityRequested: item.quantityRequested || 0,
+            unitPrice: item.unitPrice || 0,
+            totalPrice: (item.quantityRequested || 0) * (item.unitPrice || 0),
+            unit: item.unit || 'pcs',
+            notes: item.notes || '',
+        }));
+        const totals = calculateTotals(processedItems, taxRate);
+        const qtNumber = await generateQTNumber(company_id);
+        const qt = await prisma_1.default.quotation.create({
+            data: {
+                qtNumber,
+                clientId: client_id,
+                client: client,
+                clientName: client.name,
+                supplier: supplier || null,
+                supplierName: supplier?.name || null,
+                siteId: site_id || null,
+                status: 'draft',
+                items: processedItems,
+                subTotal: totals.subTotal,
+                taxRate: totals.taxRate,
+                taxAmount: totals.taxAmount,
+                totalAmount: totals.totalAmount,
+                validUntil: validUntil ? new Date(validUntil) : null,
+                notes,
+                terms,
+                createdById: req.user.id,
+                companyId: company_id,
+            },
+            include: {
+                site: { select: { id: true, name: true, location: true } },
+                createdBy: { select: { name: true } },
+            },
+        });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.CREATE, actionLogService_2.ResourceType.QUOTATION, `Created quotation ${qtNumber} for ${client.name}`, { resourceId: qt.id, resourceName: qtNumber });
+        res.status(201).json({ ...formatQt(qt), message: 'Quotation created successfully' });
+    }
+    catch (err) {
+        console.error('Create quotation error:', err);
+        res.status(500).json({ error: 'Failed to create quotation' });
+    }
+});
+router.get('/:id/pdf', auth_1.authenticateToken, async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const qt = await prisma_1.default.quotation.findUnique({
+            where: { id },
+            include: { site: { select: { id: true, name: true, location: true } } },
+        });
+        if (!qt || qt.companyId !== req.user.company_id) {
+            res.status(404).json({ error: 'Quotation not found' });
+            return;
+        }
+        const company = await loadCompany(req.user.company_id);
+        const formatted = formatQt(qt);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(buildQuotationHtml(formatted, (company || {})));
+    }
+    catch (err) {
+        console.error('Generate quotation PDF error:', err);
+        res.status(500).json({ error: 'Failed to generate quotation PDF' });
+    }
+});
+router.get('/:id', auth_1.authenticateToken, async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const qt = await prisma_1.default.quotation.findUnique({
+            where: { id },
+            include: {
+                site: { select: { id: true, name: true, location: true } },
+                createdBy: { select: { name: true } },
+            },
+        });
+        if (!qt || qt.companyId !== req.user.company_id) {
+            res.status(404).json({ error: 'Quotation not found' });
+            return;
+        }
+        res.json(formatQt(qt));
+    }
+    catch (err) {
+        console.error('Get quotation error:', err);
+        res.status(500).json({ error: 'Failed to fetch quotation' });
+    }
+});
+router.put('/:id', auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        const company_id = req.user.company_id;
+        const existing = await prisma_1.default.quotation.findUnique({ where: { id } });
+        if (!existing || existing.companyId !== company_id) {
+            res.status(404).json({ error: 'Quotation not found' });
+            return;
+        }
+        if (existing.status !== 'draft') {
+            res.status(400).json({ error: 'Only draft quotations can be updated' });
+            return;
+        }
+        const { client_id, site_id, supplier, items, taxRate = 0, validUntil, notes, terms } = req.body;
+        if (!client_id || !items?.length) {
+            res.status(400).json({ error: 'Client and items are required' });
+            return;
+        }
+        const client = await prisma_1.default.client.findFirst({
+            where: { id: client_id, companyId: company_id },
+        });
+        if (!client) {
+            res.status(404).json({ error: 'Client not found' });
+            return;
+        }
+        if (site_id) {
+            const site = await prisma_1.default.site.findFirst({
+                where: { id: site_id, companyId: company_id },
+            });
+            if (!site) {
+                res.status(404).json({ error: 'Site not found' });
+                return;
+            }
+        }
+        const processedItems = items.map((item) => ({
+            materialName: item.materialName,
+            material_id: item.material_id || null,
+            description: item.description || '',
+            quantityRequested: item.quantityRequested || 0,
+            unitPrice: item.unitPrice || 0,
+            totalPrice: (item.quantityRequested || 0) * (item.unitPrice || 0),
+            unit: item.unit || 'pcs',
+            notes: item.notes || '',
+        }));
+        const totals = calculateTotals(processedItems, taxRate);
+        const updated = await prisma_1.default.quotation.update({
+            where: { id },
+            data: {
+                clientId: client_id,
+                client: client,
+                clientName: client.name,
+                supplier: supplier || null,
+                supplierName: supplier?.name || null,
+                siteId: site_id || null,
+                items: processedItems,
+                subTotal: totals.subTotal,
+                taxRate: totals.taxRate,
+                taxAmount: totals.taxAmount,
+                totalAmount: totals.totalAmount,
+                validUntil: validUntil ? new Date(validUntil) : null,
+                notes,
+                terms,
+            },
+            include: {
+                site: { select: { id: true, name: true, location: true } },
+                createdBy: { select: { name: true } },
+            },
+        });
+        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.UPDATE, actionLogService_2.ResourceType.QUOTATION, `Updated quotation ${updated.qtNumber}`, { resourceId: updated.id, resourceName: updated.qtNumber });
+        res.json({ ...formatQt(updated), message: 'Quotation updated successfully' });
+    }
+    catch (err) {
+        console.error('Update quotation error:', err);
+        res.status(500).json({ error: 'Failed to update quotation' });
+    }
+});
 router.delete('/:id', auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
     try {
         const id = String(req.params.id);
@@ -237,13 +489,18 @@ function calculateTotals(items, taxRate = 0) {
     return { subTotal, taxRate, taxAmount, totalAmount: subTotal + taxAmount };
 }
 function formatQt(qt) {
+    const site = qt.site
+        ? { _id: qt.site.id, name: qt.site.name, location: qt.site.location }
+        : qt.siteId
+            ? { _id: qt.siteId, name: '', location: undefined }
+            : null;
     return {
         id: (qt.id ?? qt._id)?.toString(),
         qtNumber: qt.qtNumber,
         client_id: (qt.clientId ?? qt.client_id)?.toString?.() || undefined,
         client: qt.client || null,
         supplier: qt.supplier || null,
-        site: qt.siteId ?? qt.site_id,
+        site,
         status: qt.status,
         items: qt.items,
         subTotal: qt.subTotal,
@@ -254,8 +511,8 @@ function formatQt(qt) {
         notes: qt.notes,
         terms: qt.terms,
         sentDate: qt.sentDate,
-        convertedToPO: qt.convertedToPO,
-        convertedToInvoice: qt.convertedToInvoice,
+        convertedToPO: qt.convertedToPOId ?? qt.convertedToPO ?? null,
+        convertedToInvoice: qt.convertedToInvoiceId ?? qt.convertedToInvoice?.id ?? qt.convertedToInvoice ?? null,
         createdBy: qt.createdBy?.name || qt.createdBy,
         createdAt: qt.createdAt,
         updatedAt: qt.updatedAt,
@@ -269,7 +526,7 @@ function escapePdfText(value) {
         .replace(/[\r\n]+/g, " ");
 }
 function formatMoney(value) {
-    return `$${Number(value || 0).toFixed(2)}`;
+    return `RWF ${Number(value || 0).toFixed(2)}`;
 }
 function wrapText(text, maxLength) {
     const words = String(text || "").split(/\s+/).filter(Boolean);
@@ -320,7 +577,7 @@ function formatLongDate(value) {
 }
 function buildQuotationHtml(qt, company) {
     const client = (qt.client || {});
-    const site = qt.site_id;
+    const site = (qt.site || qt.site_id);
     const companyName = escapeHtml(company.name || "Lilstock");
     const companyAddress = escapeHtml(company.address || "");
     const companyPhone = escapeHtml(company.phone || "");
@@ -580,7 +837,7 @@ function buildQuotationPdf(qt) {
     if (client.address)
         addText(`Address: ${client.address}`);
     addGap();
-    const site = qt.site_id;
+    const site = (qt.site || qt.site_id);
     addText("Details", margin, 12, true);
     if (site?.name)
         addText(`Site: ${site.name}${site.location ? `, ${site.location}` : ""}`);
@@ -649,81 +906,5 @@ function buildQuotationPdf(qt) {
     pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
     return Buffer.from(pdf, "utf8");
 }
-// Legacy Mongoose-backed list/get/create/update routes removed during migration.
-// Prisma-backed handlers remain above; if you need list/create/update implemented
-// with Prisma, I can add them next.
-// Convert accepted quotation to invoice
-router.post("/:id/convert", auth_1.authenticateToken, auth_1.requireMainStockManager, async (req, res) => {
-    try {
-        const id = String(req.params.id);
-        const company_id = req.user.company_id;
-        const qt = await prisma_1.default.quotation.findUnique({ where: { id } });
-        if (!qt || qt.companyId !== company_id) {
-            res.status(404).json({ error: "Quotation not found" });
-            return;
-        }
-        if (qt.status !== "accepted") {
-            res.status(400).json({
-                error: "Only accepted quotations can be converted to an invoice",
-            });
-            return;
-        }
-        if (qt.convertedToInvoiceId) {
-            res.status(400).json({
-                error: "This quotation has already been converted to an invoice",
-            });
-            return;
-        }
-        const invoiceNumber = await generateInvoiceNumber(company_id);
-        const dueDate = qt.validUntil || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        const qtItems = Array.isArray(qt.items) ? qt.items : [];
-        const invoiceItems = qtItems.map((item) => ({
-            materialName: item.materialName,
-            material_id: item.material_id || null,
-            description: item.description || "",
-            quantity: item.quantityRequested,
-            unitPrice: item.unitPrice,
-            totalPrice: item.totalPrice,
-            unit: item.unit,
-            notes: item.notes || "",
-        }));
-        const invoice = await prisma_1.default.invoice.create({
-            data: {
-                invoiceNumber,
-                quotationId: id,
-                qtNumber: qt.qtNumber,
-                clientId: qt.clientId || null,
-                client: qt.client || {},
-                siteId: qt.siteId || null,
-                status: 'draft',
-                items: invoiceItems,
-                subTotal: qt.subTotal || 0,
-                taxRate: qt.taxRate || 0,
-                taxAmount: qt.taxAmount || 0,
-                totalAmount: qt.totalAmount || 0,
-                amountPaid: 0,
-                balanceDue: qt.totalAmount || 0,
-                issueDate: new Date(),
-                dueDate,
-                notes: qt.notes,
-                terms: qt.terms,
-                createdById: req.user.id,
-                companyId: company_id,
-            },
-        });
-        await prisma_1.default.quotation.update({ where: { id }, data: { convertedToInvoiceId: invoice.id } });
-        await actionLogService_1.ActionLogService.logFromRequest(req, actionLogService_2.ActionType.CREATE, actionLogService_2.ResourceType.INVOICE, `Converted quotation ${qt.qtNumber} to invoice ${invoiceNumber}`, { resourceId: invoice.id, resourceName: invoiceNumber });
-        res.status(201).json({
-            id: qt.id,
-            qtNumber: qt.qtNumber,
-            convertedToInvoice: { id: invoice.id, invoiceNumber },
-            message: `Quotation converted to invoice ${invoiceNumber}`,
-        });
-    }
-    catch (err) {
-        console.error("Convert quotation error:", err);
-        res.status(500).json({ error: "Failed to convert quotation to invoice" });
-    }
-});
 exports.default = router;
 //# sourceMappingURL=quotations.js.map

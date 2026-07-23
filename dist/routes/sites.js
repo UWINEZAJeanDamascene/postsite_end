@@ -10,7 +10,6 @@ const actionLogService_1 = require("../services/actionLogService");
 const notificationService_1 = require("../services/notificationService");
 const types_1 = require("../types");
 const client_1 = require("@prisma/client");
-const apiEnums_1 = require("../utils/apiEnums");
 const router = (0, express_1.Router)();
 function normalizeParam(param) {
     if (!param)
@@ -262,9 +261,7 @@ router.get('/:id/details', auth_1.authenticateToken, auth_1.requireMainStockMana
                 updatedAt: record.updatedAt,
                 price: record.mainStockRecord?.price ?? null,
                 totalValue: record.mainStockRecord?.totalValue ?? null,
-                status: record.mainStockRecord?.status
-                    ? (0, apiEnums_1.toApiStatus)(record.mainStockRecord.status)
-                    : null,
+                status: record.mainStockRecord?.status ?? null,
             })),
             stats: {
                 recordsThisMonth,

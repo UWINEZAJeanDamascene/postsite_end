@@ -66,7 +66,7 @@ router.get('/', auth_1.authenticateToken, async (req, res) => {
                 where.date.lte = new Date(endDate);
         }
         if (materialName && typeof materialName === 'string') {
-            where.materialName = { contains: materialName, mode: 'insensitive' };
+            where.materialName = { contains: materialName, };
         }
         const records = await prisma_1.default.siteRecord.findMany({
             where,
@@ -100,7 +100,7 @@ router.get('/my', auth_1.authenticateToken, async (req, res) => {
                 where.date.lte = new Date(endDate);
         }
         if (materialName && typeof materialName === 'string') {
-            where.materialName = { contains: materialName, mode: 'insensitive' };
+            where.materialName = { contains: materialName, };
         }
         if (quantityUsed === 'true') {
             where.quantityUsed = { gt: 0 };
@@ -210,7 +210,7 @@ router.get('/:id', auth_1.authenticateToken, async (req, res) => {
 });
 router.post('/', auth_1.authenticateToken, (0, auth_1.requireSiteAccess)('siteId'), async (req, res) => {
     try {
-        const { materialName, quantityReceived, quantityUsed, date, notes, siteId } = req.body;
+        const { materialName, materialId, quantityReceived, quantityUsed, date, notes, siteId } = req.body;
         const companyId = req.user.company_id;
         if (!materialName || !siteId || !date) {
             res.status(400).json({ error: 'Material name, site ID, and date are required' });
@@ -224,6 +224,7 @@ router.post('/', auth_1.authenticateToken, (0, auth_1.requireSiteAccess)('siteId
             data: {
                 siteId,
                 materialName,
+                materialId: materialId || null,
                 quantityReceived: quantityReceived || 0,
                 quantityUsed: quantityUsed || 0,
                 date: new Date(date),
@@ -289,6 +290,7 @@ router.post('/bulk', auth_1.authenticateToken, async (req, res) => {
                 data: {
                     siteId: recordData.siteId,
                     materialName: recordData.materialName,
+                    materialId: recordData.materialId || null,
                     quantityReceived: recordData.quantityReceived || 0,
                     quantityUsed: recordData.quantityUsed || 0,
                     date: new Date(recordData.date),
@@ -338,7 +340,7 @@ router.post('/bulk', auth_1.authenticateToken, async (req, res) => {
 router.put('/:id', auth_1.authenticateToken, async (req, res) => {
     try {
         const id = normalizeParam(req.params.id);
-        const { materialName, quantityReceived, quantityUsed, date, notes } = req.body;
+        const { materialName, materialId, quantityReceived, quantityUsed, date, notes } = req.body;
         const companyId = req.user.company_id;
         if (!id) {
             res.status(400).json({ error: 'Invalid record ID' });
@@ -359,6 +361,8 @@ router.put('/:id', auth_1.authenticateToken, async (req, res) => {
         const updateData = {};
         if (materialName)
             updateData.materialName = materialName;
+        if (materialId !== undefined)
+            updateData.materialId = materialId || null;
         if (quantityReceived !== undefined)
             updateData.quantityReceived = quantityReceived;
         if (quantityUsed !== undefined)

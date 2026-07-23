@@ -5,7 +5,6 @@ export declare function syncSiteRecordToMainStock(siteRecordId: string): Promise
     createdAt: Date;
     updatedAt: Date;
     siteId: string | null;
-    materialName: string;
     quantityReceived: number;
     quantityUsed: number;
     date: Date;
