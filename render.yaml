@@ -8,9 +8,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        value: mongodb+srv://siteStock:sitestock@cluster0.krocmmo.mongodb.net/
+        value: mysql://3kmMJWeFPjsr69U.root:Ds4jvjiWFyUCKW8U@gateway01.eu-central-1.prod.aws.tidbcloud.com:4000/postsite?sslaccept=strict
       - key: FRONTEND_URL
-        value: https://mult-site-stock.vercel.app/
+        value: https://postsite-fro.vercel.app/
       - key: JWT_SECRET
         value: dev-secret-key-change-in-production
       - key: JWT_EXPIRES_IN
